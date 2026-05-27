@@ -1,0 +1,24 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "e91df172236cefebd3c7b0d3e596af47"
+name = "Qivos-scotch-soda"
+application_url = "https://dd-79.dynamicdreamz.com"
+embedded = true
+
+[build]
+automatically_update_urls_on_dev = true
+
+[webhooks]
+api_version = "2026-07"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_customers,read_draft_orders,read_inventory,read_locations,read_orders,read_products,read_shipping,read_themes,write_customers,write_discounts,write_draft_orders,write_locations,write_metaobject_definitions,write_metaobjects,write_online_store_navigation,write_orders,write_products,write_validations"
+
+[auth]
+redirect_urls = [ "https://dd-79.dynamicdreamz.com/api/auth" ]
+
+[app_proxy]
+url = "https://dd-79.dynamicdreamz.com"
+subpath = "scotch-soda"
+prefix = "apps"
