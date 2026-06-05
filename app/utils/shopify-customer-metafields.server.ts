@@ -1,13 +1,9 @@
-import { resolveCurrentShop } from "./store.server";
+import { resolveCurrentShop, toShopifyCustomerGid } from "./store.server";
 import {
   getAdminGraphqlClient,
   type AdminGraphqlClient,
 } from "./shopify-admin.server";
 import {
-  extractStringValue,
-  extractObjectRecord,
-  extractFirstFromArrayField,
-  findFirstNestedValue,
   extractQivosPayload,
   isQivosLogicalFailure,
   normalizeBooleanValue,
@@ -27,15 +23,22 @@ export type CustomerSyncBody = {
   customerId?: string | number;
   shop?: string;
   metafieldNamespace?: string;
+  qivos?: string;
   [key: string]: unknown;
 };
 
 export type CustomerIdentityMetafieldValues = {
   personQCCode?: string;
   loyaltyQCCode?: string;
+  countryCode?: string;
   phone?: string;
   email?: string;
+  tier?: string;
+  redeemPoint?: string;
+  canRedeem?: boolean;
   loyaltySync?: boolean;
+  qivos?: string;
+  qivosNote?: string;
 };
 
 export type SaveCustomerMetafieldsResult = {
@@ -180,8 +183,14 @@ async function ensureMetafieldDefinitions(
   const definitions = [
     { name: "Person QC Code", key: "person_qc_code" },
     { name: "Loyalty QC Code", key: "loyalty_qc_code" },
+    { name: "Country Code", key: "country_code" },
     { name: "Phone", key: "phone" },
+    { name: "Tier", key: "tier" },
+    { name: "Redeem Point", key: "redeem_point" },
+    { name: "Can Redeem", key: "can_redeem", type: "boolean" },
     { name: "Loyalty Sync", key: "loyalty_sync", type: "boolean" },
+    { name: "Qivos", key: "qivos" },
+    { name: "QIVOS Note", key: "qivos_note" },
   ];
 
   for (const def of definitions) {
@@ -230,27 +239,48 @@ function normalizeCountryCode(value: unknown): string | undefined {
   return countryCode ? countryCode.toUpperCase() : undefined;
 }
 
-function normalizePhoneToE164(phone: string | undefined): string | undefined {
+function getDialCodeByCountry(
+  countryCode: string | undefined,
+): string | undefined {
+  switch (countryCode?.toUpperCase()) {
+    case "AE":
+      return "+971";
+    case "SA":
+      return "+966";
+    case "IN":
+      return "+91";
+    case "CA":
+      return "+1";
+    default:
+      return undefined;
+  }
+}
+
+function normalizePhoneForMetafield(
+  phone: string | undefined,
+  countryCode?: string,
+): string | undefined {
   if (!phone) return undefined;
 
-  const digits = phone.replace(/[\s\-().]/g, "");
+  const digits = phone.replace(/\D/g, "");
+  if (!digits) return undefined;
 
-  if (digits.startsWith("+")) {
-    return digits;
+  const dialCode = getDialCodeByCountry(countryCode);
+  if (dialCode) {
+    const countryDigits = dialCode.replace("+", "");
+    if (digits.startsWith(countryDigits)) {
+      return digits.slice(countryDigits.length);
+    }
   }
 
-  // 10-digit number starting with Indian mobile prefix → assume +91
-  if (/^[6-9]\d{9}$/.test(digits)) {
-    return `+91${digits}`;
+  const knownDialCodes = ["971", "966", "91", "1"];
+  for (const countryDigits of knownDialCodes) {
+    if (digits.startsWith(countryDigits) && digits.length > 10) {
+      return digits.slice(countryDigits.length);
+    }
   }
 
-  // Already has country code digits but missing "+", e.g. "918574962577"
-  if (digits.length > 10) {
-    return `+${digits}`;
-  }
-
-  // Fallback: prepend "+" and hope for the best
-  return `+${digits}`;
+  return digits;
 }
 
 function getResponseRoots(responseData: unknown): Record<string, unknown>[] {
@@ -485,14 +515,139 @@ function extractFirstArrayQCCode(value: unknown): string | undefined {
 
     const qcCode =
       extractStringValue(record.QCCode) ??
+      extractStringValue(record.qcCode) ??
       extractStringValue(record.loyaltyQCCode) ??
-      extractStringValue(record.loyaltyCode);
+      extractStringValue(record.loyaltyCode) ??
+      extractStringValue(record.membershipQCCode) ??
+      extractStringValue(record.membershipCode) ??
+      extractStringValue(record.code);
     if (qcCode) {
       return qcCode;
     }
   }
 
   return undefined;
+}
+
+function extractTierFromLoyaltyMembershipData(
+  value: unknown,
+): string | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  let fallbackTier: string | undefined;
+
+  for (const item of value) {
+    const record = extractObjectRecord(item);
+    if (!record) {
+      continue;
+    }
+
+    const tier =
+      extractStringValue(record.category) ?? extractStringValue(record.tier);
+
+    if (!tier) {
+      continue;
+    }
+
+    if (record.active === false) {
+      fallbackTier ??= tier;
+      continue;
+    }
+
+    return tier;
+  }
+
+  return fallbackTier;
+}
+
+function extractCanRedeemFromLoyaltyMembershipData(
+  value: unknown,
+): boolean | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  let fallbackCanRedeem: boolean | undefined;
+
+  for (const item of value) {
+    const record = extractObjectRecord(item);
+    if (!record) {
+      continue;
+    }
+
+    const attributes = Array.isArray(record.attributes)
+      ? record.attributes
+      : [];
+    for (const attribute of attributes) {
+      const attributeRecord = extractObjectRecord(attribute);
+      if (!attributeRecord) {
+        continue;
+      }
+
+      const attributeName =
+        extractStringValue(attributeRecord.attributeName) ??
+        extractStringValue(attributeRecord.name) ??
+        extractStringValue(attributeRecord.attributeKey);
+
+      if (attributeName?.toUpperCase() !== "CANREDEEM") {
+        continue;
+      }
+
+      const canRedeem =
+        normalizeBooleanValue(attributeRecord.attributeValue) ??
+        normalizeBooleanValue(attributeRecord.value);
+
+      if (canRedeem === undefined) {
+        continue;
+      }
+
+      if (record.active === false) {
+        fallbackCanRedeem ??= canRedeem;
+        continue;
+      }
+
+      return canRedeem;
+    }
+  }
+
+  return fallbackCanRedeem;
+}
+
+function extractRedeemPointFromLoyaltyMembershipData(
+  value: unknown,
+): string | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  let fallbackRedeemPoint: string | undefined;
+
+  for (const item of value) {
+    const record = extractObjectRecord(item);
+    if (!record) {
+      continue;
+    }
+
+    const redeemPoint =
+      extractStringValue(record.pointBalance) ??
+      extractStringValue(record.redeemPoint) ??
+      extractStringValue(record.redeem_point);
+
+    if (!redeemPoint) {
+      continue;
+    }
+
+    if (record.active === false) {
+      fallbackRedeemPoint ??= redeemPoint;
+      continue;
+    }
+
+    return redeemPoint;
+  }
+
+  return fallbackRedeemPoint;
 }
 
 function extractMetafieldValues(
@@ -521,19 +676,55 @@ function extractMetafieldValues(
     extractFirstArrayQCCode(loyaltyMembershipData) ??
     extractFirstArrayQCCode(body.loyaltyMembershipData) ??
     findFirstNestedValue(responseData, [
+      "membershipQCCode",
+      "membershipCode",
       "loyaltyQCCode",
       "loyaltyCode",
       "membershipNumber",
       "loyaltyNumber",
+      "qcCode",
+      "code",
     ]);
 
-  const phone = normalizePhoneToE164(profile.phone);
+  const countryCode =
+    normalizeCountryCode(body.countryCode) ??
+    findFirstNestedValue(body.telephoneList, ["countryCode", "country"]) ??
+    findFirstNestedValue(responseData, ["countryCode", "country"]);
+  const phone = normalizePhoneForMetafield(profile.phone, countryCode);
+  const tier =
+    extractTierFromLoyaltyMembershipData(loyaltyMembershipData) ??
+    extractTierFromLoyaltyMembershipData(body.loyaltyMembershipData) ??
+    findFirstNestedValue(responseData, ["category", "tier"]);
+  const canRedeem =
+    extractCanRedeemFromLoyaltyMembershipData(loyaltyMembershipData) ??
+    extractCanRedeemFromLoyaltyMembershipData(body.loyaltyMembershipData) ??
+    normalizeBooleanValue(findFirstNestedValue(responseData, ["CANREDEEM"])) ??
+    normalizeBooleanValue(findFirstNestedValue(responseData, ["canRedeem"]));
+  const redeemPoint =
+    extractRedeemPointFromLoyaltyMembershipData(loyaltyMembershipData) ??
+    extractRedeemPointFromLoyaltyMembershipData(body.loyaltyMembershipData) ??
+    findFirstNestedValue(responseData, [
+      "pointBalance",
+      "redeemPoint",
+      "redeem_point",
+    ]);
+
+  const loyaltySync =
+    normalizeBooleanValue(body.loyaltySync) ??
+    normalizeBooleanValue(
+      findFirstNestedValue(responseData, ["loyaltySync"]),
+    ) ??
+    false;
 
   return {
     personQCCode,
     loyaltyQCCode,
+    countryCode,
     phone,
-    loyaltySync: Boolean(personQCCode && loyaltyQCCode && phone),
+    tier,
+    redeemPoint,
+    canRedeem,
+    loyaltySync,
   };
 }
 
@@ -668,7 +859,7 @@ async function updateShopifyCustomer(
 async function findCustomerIdByIdentityMetafield(
   adminClient: AdminGraphqlClient,
   namespace: string,
-  key: "Person QC Code" | "Loyalty QC Code",
+  key: "person_qc_code" | "loyalty_qc_code" | "phone",
   value: string | undefined,
 ): Promise<string | undefined> {
   if (!value) {
@@ -772,10 +963,26 @@ async function setCustomerIdentityMetafields(
   namespace: string,
   values: CustomerIdentityMetafieldValues,
 ): Promise<SaveCustomerMetafieldsResult> {
+  const ownerId = toShopifyCustomerGid(customerId);
+  if (!ownerId) {
+    throw new Error(
+      "Invalid Shopify customer ID provided for metafield ownerId",
+    );
+  }
+
   const metafieldsToSet = [
     { key: "person_qc_code", value: values.personQCCode }, // ✅ no spaces
     { key: "loyalty_qc_code", value: values.loyaltyQCCode }, // ✅ no spaces
+    { key: "country_code", value: values.countryCode },
     { key: "phone", value: values.phone },
+    { key: "tier", value: values.tier },
+    { key: "redeem_point", value: values.redeemPoint },
+    { key: "qivos_note", value: values.qivosNote },
+    {
+      key: "can_redeem",
+      type: "boolean",
+      value: values.canRedeem === true ? "true" : "false",
+    },
     {
       key: "loyalty_sync",
       type: "boolean",
@@ -784,7 +991,7 @@ async function setCustomerIdentityMetafields(
   ]
     .filter((item) => item.value !== undefined)
     .map((item) => ({
-      ownerId: customerId,
+      ownerId,
       namespace,
       key: item.key,
       type: item.type ?? "single_line_text_field",
@@ -915,7 +1122,7 @@ export async function syncCustomerMetafields(
   try {
     adminClient = await getAdminGraphqlClient(shop);
   } catch (error) {
-    if (error) {
+    if (error instanceof Error) {
       return {
         synced: false,
         shop,
@@ -952,14 +1159,20 @@ export async function syncCustomerMetafields(
           (await findCustomerIdByIdentityMetafield(
             adminClient,
             namespace,
-            "Person QC Code",
+            "person_qc_code",
             values.personQCCode,
           )) ??
           (await findCustomerIdByIdentityMetafield(
             adminClient,
             namespace,
-            "Loyalty QC Code",
+            "loyalty_qc_code",
             values.loyaltyQCCode,
+          )) ??
+          (await findCustomerIdByIdentityMetafield(
+            adminClient,
+            namespace,
+            "phone",
+            values.phone,
           )) ??
           (profile.email
             ? await findCustomerIdByEmail(adminClient, profile.email)
@@ -1022,14 +1235,25 @@ export async function getCustomerIdentityMetafields({
     `#graphql
       query GetCustomerMetafields($customerId: ID!, $namespace: String!) {
         customer(id: $customerId) {
-          email
           personQCCode: metafield(namespace: $namespace, key: "person_qc_code") {
             value
           }
           loyaltyQCCode: metafield(namespace: $namespace, key: "loyalty_qc_code") {
             value
           }
+          countryCode: metafield(namespace: $namespace, key: "country_code") {
+            value
+          }
           phone: metafield(namespace: $namespace, key: "phone") {
+            value
+          }
+          tier: metafield(namespace: $namespace, key: "tier") {
+            value
+          }
+          redeemPoint: metafield(namespace: $namespace, key: "redeem_point") {
+            value
+          }
+          canRedeem: metafield(namespace: $namespace, key: "can_redeem") {
             value
           }
           loyaltySync: metafield(namespace: $namespace, key: "loyalty_sync") {
@@ -1046,10 +1270,13 @@ export async function getCustomerIdentityMetafields({
   const result = (await response.json()) as {
     data?: {
       customer?: {
-        email?: string | null;
         personQCCode?: { value?: string } | null;
         loyaltyQCCode?: { value?: string } | null;
+        countryCode?: { value?: string } | null;
         phone?: { value?: string } | null;
+        tier?: { value?: string } | null;
+        redeemPoint?: { value?: string } | null;
+        canRedeem?: { value?: string } | null;
         loyaltySync?: { value?: string } | null;
       } | null;
     };
@@ -1058,16 +1285,24 @@ export async function getCustomerIdentityMetafields({
 
   const errors = result.errors ?? [];
   if (errors.length > 0) {
-    throw new Error(errors.map((e) => e.message).filter(Boolean).join(", "));
+    throw new Error(
+      errors
+        .map((e) => e.message)
+        .filter(Boolean)
+        .join(", "),
+    );
   }
 
   const customer = result.data?.customer;
 
   return {
-    email: customer?.email ?? undefined,
     personQCCode: customer?.personQCCode?.value ?? undefined,
     loyaltyQCCode: customer?.loyaltyQCCode?.value ?? undefined,
+    countryCode: normalizeCountryCode(customer?.countryCode?.value),
     phone: customer?.phone?.value ?? undefined,
+    tier: customer?.tier?.value ?? undefined,
+    redeemPoint: customer?.redeemPoint?.value ?? undefined,
+    canRedeem: customer?.canRedeem?.value === "true",
     loyaltySync: customer?.loyaltySync?.value === "true",
   };
 }

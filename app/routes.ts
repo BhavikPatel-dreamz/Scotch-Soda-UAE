@@ -14,10 +14,6 @@ export default [
     "customer-account/metafields",
     "routes/customer-account.metafields.tsx",
   ),
-  route(
-    "public/customer-account/metafields",
-    "routes/public.customer-account.metafields.tsx",
-  ),
   route("app", "routes/app.tsx", [
     index("routes/app._index.tsx"),
     route("additional", "routes/app.additional.tsx"),
@@ -27,6 +23,7 @@ export default [
   route("webhooks/app/uninstalled", "routes/webhooks.app.uninstalled.tsx"),
   route("webhooks/app/scopes_update", "routes/webhooks.app.scopes_update.tsx"),
   route("webhooks/customers/create", "routes/webhooks.customers.create.tsx"),
+  route("webhooks/orders/paid", "routes/webhooks.orders.paid.tsx"),
   route("webhooks/orders/updated", "routes/webhooks.orders.updated.tsx"),
   route("webhooks/shop/update", "routes/webhooks.shop.update.tsx"),
 
@@ -48,6 +45,8 @@ export default [
       "transactions/loyalty",
       "routes/api.proxy/transactions.loyalty.tsx",
     ),
+    route("customerCredit", "routes/api.proxy/customerCredit.tsx"),
+    route("pointlogs/reserve-points","routes/api.proxy/pointlogs.reserve-points.tsx")
   ]),
   // Index route
   index("routes/_index/route.tsx"),

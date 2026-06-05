@@ -1,5 +1,4 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import prisma from "../../db.server";
 import { authenticateApiProxyRequest } from "../../utils/api-proxy-auth.server";
 import { getQIVOSToken } from "../../utils/qivos-token.server";
 import { ensureStoreRecord, resolveCurrentShop } from "../../utils/store.server";
@@ -7,10 +6,19 @@ import { getAdminGraphqlClient, type AdminGraphqlClient } from "../../utils/shop
 import { getCorsHeaders } from "../../utils/cors.server";
 import { QIVOS_BESIDE_API_BASE_URL } from "../../utils/constants";
 import {
+  backfillMissingQivosPersonDetails,
+  fetchShopifyCustomerProfile,
+} from "../../utils/qivos-person-backfill.server";
+import {
   extractStringValue,
   extractObjectRecord,
   findFirstNestedValue,
+  normalizeBooleanValue,
 } from "../../utils/qivos-utils.server";
+import {
+  syncCustomerMetafields,
+  saveCustomerIdentityMetafields,
+} from "../../utils/shopify-customer-metafields.server";
 
 const QIVOS_PERSONS_SEARCH_URL =
   `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/persons/search`;
@@ -92,7 +100,7 @@ async function searchByStandardPhone(
               id
               phone
               email
-              metafield(namespace: "custom", key: "Phone") {
+              metafield(namespace: "custom", key: "phone") {
                 value
               }
             }
@@ -151,7 +159,7 @@ async function searchByPhoneMetafieldFallback(
                 id
                 phone
                 email
-                metafield(namespace: "custom", key: "Phone") {
+                metafield(namespace: "custom", key: "phone") {
                   value
                 }
               }
@@ -274,11 +282,19 @@ async function findShopifyCustomer(
 function buildSearchPayload(body: PersonsSearchBody) {
   // If caller already provided a full criteriaList — use it as-is
   if (Array.isArray(body.criteriaList) && body.criteriaList.length > 0) {
-    return {
+    const payload = {
       ...body,
       pagination: body.pagination ?? { page: 1, pageSize: 100 },
       sorting: body.sorting ?? { sortingField: "ID", sortingOrder: "DESC" },
     };
+
+    // Remove internal fields that QIVOS doesn't recognize
+    delete (payload as any).shop;
+    delete (payload as any).customerId;
+    delete (payload as any).metafieldNamespace;
+    delete (payload as any).loyaltySync;
+
+    return payload;
   }
 
   // Auto-build from emailAddress field
@@ -482,6 +498,292 @@ function extractEmailFromQivosPerson(
   );
 }
 
+function normalizeInactiveValue(value: unknown): boolean {
+  if (typeof value === "boolean") return value === false;
+  if (typeof value === "string") {
+    return value.trim().toLowerCase() === "false";
+  }
+  if (value && typeof value === "object" && "value" in value) {
+    return normalizeInactiveValue((value as { value?: unknown }).value);
+  }
+  return false;
+}
+
+function extractPersonQCCode(person: Record<string, unknown>): string | undefined {
+  return (
+    extractStringValue(person.QCCode) ??
+    extractStringValue(person.qcCode) ??
+    extractStringValue(person.personQCCode)
+  );
+}
+
+function extractLoyaltyQCCode(value: unknown): string | undefined {
+  const record = extractObjectRecord(value);
+  if (!record) return undefined;
+
+  return (
+    extractStringValue(record.QCCode) ??
+    extractStringValue(record.qcCode) ??
+    extractStringValue(record.loyaltyQCCode) ??
+    extractStringValue(record.loyaltyCode) ??
+    extractStringValue(record.membershipQCCode) ??
+    extractStringValue(record.membershipCode) ??
+    extractStringValue(record.code)
+  );
+}
+
+function collectInactiveLoyaltyMemberships(
+  person: Record<string, unknown>,
+): Array<{ personQCCode: string; loyaltyQCCode: string }> {
+  const personQCCode = extractPersonQCCode(person);
+  if (!personQCCode) return [];
+
+  const memberships = Array.isArray(person.loyaltyMembershipData)
+    ? person.loyaltyMembershipData
+    : [];
+
+  return memberships.flatMap((membership) => {
+    const record = extractObjectRecord(membership);
+    if (!record || !normalizeInactiveValue(record.active)) return [];
+
+    const loyaltyQCCode = extractLoyaltyQCCode(record);
+    if (!loyaltyQCCode) return [];
+
+    return [{ personQCCode, loyaltyQCCode }];
+  });
+}
+
+function extractPointBalanceFromQivosPerson(
+  person: Record<string, unknown>,
+): string | undefined {
+  if (!person || typeof person !== "object") {
+    return undefined;
+  }
+
+  const loyaltyMembershipData = (person as { loyaltyMembershipData?: unknown })
+    .loyaltyMembershipData;
+
+  if (!Array.isArray(loyaltyMembershipData)) {
+    return undefined;
+  }
+
+  for (const membership of loyaltyMembershipData) {
+    if (!membership || typeof membership !== "object") {
+      continue;
+    }
+
+    const record = membership as {
+      active?: unknown;
+      pointBalance?: unknown;
+    };
+
+    if (record.active === false) {
+      continue;
+    }
+
+    if (typeof record.pointBalance === "string" && record.pointBalance.trim().length > 0) {
+      return record.pointBalance.trim();
+    }
+
+    if (typeof record.pointBalance === "number") {
+      return String(record.pointBalance);
+    }
+  }
+
+  return undefined;
+}
+
+function extractCanRedeemFromQivosPerson(
+  person: Record<string, unknown>,
+): boolean | undefined {
+  if (!person || typeof person !== "object") {
+    return undefined;
+  }
+
+  const loyaltyMembershipData = (person as { loyaltyMembershipData?: unknown })
+    .loyaltyMembershipData;
+
+  if (!Array.isArray(loyaltyMembershipData)) {
+    return undefined;
+  }
+
+  for (const membership of loyaltyMembershipData) {
+    if (!membership || typeof membership !== "object") {
+      continue;
+    }
+
+    const record = membership as {
+      attributes?: unknown;
+    };
+    const attributes = Array.isArray(record.attributes)
+      ? record.attributes
+      : [];
+
+    for (const attribute of attributes) {
+      if (!attribute || typeof attribute !== "object") {
+        continue;
+      }
+
+      const attributeRecord = attribute as {
+        attributeName?: unknown;
+        name?: unknown;
+        attributeKey?: unknown;
+        attributeValue?: unknown;
+        value?: unknown;
+      };
+
+      const attributeName =
+        typeof attributeRecord.attributeName === "string"
+          ? attributeRecord.attributeName.trim()
+          : typeof attributeRecord.name === "string"
+            ? attributeRecord.name.trim()
+            : typeof attributeRecord.attributeKey === "string"
+              ? attributeRecord.attributeKey.trim()
+              : "";
+
+      if (attributeName.toUpperCase() !== "CANREDEEM") {
+        continue;
+      }
+
+      return (
+        normalizeBooleanValue(attributeRecord.attributeValue) ??
+        normalizeBooleanValue(attributeRecord.value)
+      );
+    }
+  }
+
+  return undefined;
+}
+
+function extractLoyaltyTierFromQivosPerson(
+  person: Record<string, unknown>,
+): string | undefined {
+  if (!person || typeof person !== "object") {
+    return undefined;
+  }
+
+  const tierFields = [
+    "tier",
+    "membershipTier",
+    "loyaltyTier",
+    "tierCode",
+    "tierName",
+    "tier_name",
+  ];
+
+  for (const field of tierFields) {
+    const value = extractStringValue(person[field]);
+    if (value) {
+      return value;
+    }
+  }
+
+  const loyaltyMembershipData = (person as { loyaltyMembershipData?: unknown })
+    .loyaltyMembershipData;
+
+  if (Array.isArray(loyaltyMembershipData)) {
+    for (const membership of loyaltyMembershipData) {
+      if (!membership || typeof membership !== "object") {
+        continue;
+      }
+
+      const record = membership as Record<string, unknown>;
+      for (const field of tierFields) {
+        const value = extractStringValue(record[field]);
+        if (value) {
+          return value;
+        }
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function getFirstLoyaltyMembership(
+  person: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const loyaltyMembershipData = (person as { loyaltyMembershipData?: unknown })
+    .loyaltyMembershipData;
+
+  if (Array.isArray(loyaltyMembershipData)) {
+    for (const membership of loyaltyMembershipData) {
+      const record = extractObjectRecord(membership);
+      if (record) {
+        return record;
+      }
+    }
+    return undefined;
+  }
+
+  return extractObjectRecord(loyaltyMembershipData);
+}
+
+async function syncInactiveMemberships(
+  request: Request,
+  inactiveMemberships: Array<{ personQCCode: string; loyaltyQCCode: string }>,
+  shop?: string,
+  customerId?: string | null,
+): Promise<Array<{ personQCCode: string; loyaltyQCCode: string; ok: boolean; status: number; error?: string }>> {
+  const results: Array<{
+    personQCCode: string;
+    loyaltyQCCode: string;
+    ok: boolean;
+    status: number;
+    error?: string;
+  }> = [];
+
+  if (inactiveMemberships.length === 0) return results;
+
+  const originUrl = new URL(request.url);
+
+  for (const membership of inactiveMemberships) {
+    const statusUrl = new URL(request.url);
+    statusUrl.pathname = `/api/proxy/persons/${encodeURIComponent(
+      membership.personQCCode,
+    )}/loyalty-membership/${encodeURIComponent(
+      membership.loyaltyQCCode,
+    )}/status`;
+    statusUrl.search = "";
+
+try {
+       const statusResponse = await fetch(statusUrl.toString(), {
+         method: "POST",
+         headers: {
+           Accept: "application/json",
+           "Content-Type": "application/json",
+           Origin: originUrl.origin,
+         },
+         body: JSON.stringify({
+           personQCCode: membership.personQCCode,
+           loyaltyQCCode: membership.loyaltyQCCode,
+           active: true,
+           shop,
+           customerId,
+         }),
+       });
+
+      results.push({
+        personQCCode: membership.personQCCode,
+        loyaltyQCCode: membership.loyaltyQCCode,
+        ok: statusResponse.ok,
+        status: statusResponse.status,
+      });
+    } catch (error) {
+      results.push({
+        personQCCode: membership.personQCCode,
+        loyaltyQCCode: membership.loyaltyQCCode,
+        ok: false,
+        status: 0,
+        error:
+          error instanceof Error ? error.message : String(error ?? "unknown"),
+      });
+    }
+  }
+
+  return results;
+}
+
 // ─── Match response builder ───────────────────────────────────────────────────
 
 function buildMatchResponse(params: {
@@ -638,7 +940,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     );
   }
 
-  const { shop: _shop, ...bodyWithoutShop } = requestBody;
+  const bodyWithoutShop = { ...requestBody };
+  delete bodyWithoutShop.shop;
   const payload = buildSearchPayload(bodyWithoutShop);
   if (!payload) {
     return new Response(
@@ -689,12 +992,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const qivosPersons = extractQivosPersons(responseData);
   const qivosPersonExists = qivosPersons.length > 0;
-  if(qivosPersons.map((data: any) => data.loyaltyMembershipData[0].active).includes(false)){
-    throw new Response(JSON.stringify({ error: "Active loyalty membership not exists for this person" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json", ...corsHeaders },
-    });
-  }
+  const inactiveMemberships = qivosPersons.flatMap((person) =>
+    collectInactiveLoyaltyMemberships(person),
+  );
+
+// Note: Inactive memberships are NOT auto-activated here.
+// User must explicitly activate via the UI button in activateInactiveMemberships.
+const inactiveMembershipSyncResults: any[] = [];
 
   const qivosPhone = qivosPersons
     .map((p) => extractPhoneFromQivosPerson(p))
@@ -703,6 +1007,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const qivosEmail = qivosPersons
     .map((p) => extractEmailFromQivosPerson(p))
     .find(Boolean);
+
+  const qivosPerson = qivosPersons[0];
+  const qivosFirstName = qivosPerson ? findFirstNestedValue(qivosPerson, ["firstName", "givenName"]) : undefined;
+  const qivosLastName = qivosPerson ? findFirstNestedValue(qivosPerson, ["lastName", "familyName"]) : undefined;
+  const qivosPointBalance = qivosPersons
+    .map((p) => extractPointBalanceFromQivosPerson(p))
+    .find(Boolean);
+  const qivosCanRedeem = qivosPersons
+    .map((p) => extractCanRedeemFromQivosPerson(p))
+    .find((value) => value !== undefined);
+  const qivosTier = qivosPerson ? extractLoyaltyTierFromQivosPerson(qivosPerson) : undefined;
+  const qivosPersonQCCode = qivosPerson ? extractPersonQCCode(qivosPerson) : undefined;
+  const qivosLoyaltyQCCode = qivosPerson
+    ? extractLoyaltyQCCode(getFirstLoyaltyMembership(qivosPerson))
+    : undefined;
+  const shopCountryCode = typeof requestBody.countryCode === "string"
+    ? requestBody.countryCode.toUpperCase()
+    : undefined;
 
   // ── Shopify lookup ───────────────────────────────────────────────────────
   let shop: string | null = null;
@@ -729,6 +1051,41 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         : "Shopify customer check failed unexpectedly";
   }
 
+  if (qivosPersonExists && shop && shopifyCustomer) {
+    let shopifyProfile = null;
+    try {
+      shopifyProfile = await fetchShopifyCustomerProfile({
+        shop,
+        customerId: shopifyCustomer.id,
+      });
+    } catch (error) {
+      console.warn("[persons.search] Failed to load Shopify profile for person backfill:", {
+        shop,
+        shopifyCustomerId: shopifyCustomer.id,
+        error,
+      });
+    }
+
+    const backfillResults = await Promise.all(
+      qivosPersons.map((person) =>
+        backfillMissingQivosPersonDetails({
+          shop,
+          customerId: shopifyCustomer.id,
+          person,
+          profile: shopifyProfile,
+        }),
+      ),
+    );
+
+    if (backfillResults.some((result) => result.namePatched || result.emailPatched)) {
+      console.log("[persons.search] Backfilled missing person details from Shopify profile:", {
+        shop,
+        shopifyCustomerId: shopifyCustomer.id,
+        results: backfillResults,
+      });
+    }
+  }
+
   // ── Build response ───────────────────────────────────────────────────────
   const matchResult = buildMatchResponse({
     identifier,
@@ -738,6 +1095,31 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     shopifyCustomer,
     shop,
   });
+
+  // If person found in QIVOS but not in Shopify, sync metafields for the current searcher
+  if (qivosPersonExists && !shopifyCustomer && requestBody.customerId && shop) {
+    try {
+      await syncCustomerMetafields(request, {
+        ...requestBody,
+        customerId: requestBody.customerId as string,
+        loyaltySync: true
+      }, responseData);
+    } catch (error) {
+      console.error("Failed to sync customer metafields during search:", error);
+    }
+    try {
+      await saveCustomerIdentityMetafields({
+        shop,
+        customerId: String(requestBody.customerId),
+        values: {
+          qivosNote: "Phone number found in QIVOS but not in Shopify",
+          loyaltySync: true,
+        },
+      });
+    } catch (error) {
+      console.error("Failed to save QIVOS note metafield during search:", error);
+    }
+  }
 
   const baseResponse =
     responseData && typeof responseData === "object"
@@ -751,6 +1133,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         ...matchResult,
         ...(shopifyLookupError ? { shopifyLookupError } : {}),
       },
+      inactiveMembershipSync: inactiveMembershipSyncResults,
+      inactiveMemberships,
+      personQCCode: qivosPersonQCCode ?? undefined,
+      loyaltyQCCode: qivosLoyaltyQCCode ?? undefined,
+      pointBalance: qivosPointBalance,
+      redeemPoint: qivosPointBalance,
+      canRedeem: qivosCanRedeem === true,
+      tier: qivosTier ?? undefined,
+      loyaltySync: false,
+      firstName: qivosFirstName,
+      lastName: qivosLastName,
+      email: qivosEmail ?? shopifyCustomer?.email ?? undefined,
+      phone: qivosPhone ?? shopifyCustomer?.phone ?? undefined,
+      shopCountryCode,
     }),
     {
       status: thirdPartyResponse.status,

@@ -1,8 +1,16 @@
-import { ALLOWED_SHOPIFY_ORIGIN } from "./constants";
+import {
+  ALLOWED_SHOPIFY_ORIGIN,
+  SHOPIFY_EXTENSION_ORIGIN
+} from "./constants";
 
 export function getCorsHeaders(origin: string | null, methods: string = "POST, OPTIONS") {
-  const allowedOrigin =
-    origin === ALLOWED_SHOPIFY_ORIGIN ? origin : ALLOWED_SHOPIFY_ORIGIN;
+  const allowedOrigins = new Set([
+    ALLOWED_SHOPIFY_ORIGIN,
+    SHOPIFY_EXTENSION_ORIGIN,
+  ]);
+  const allowedOrigin = origin && allowedOrigins.has(origin)
+    ? origin
+    : ALLOWED_SHOPIFY_ORIGIN;
 
   return {
     "Access-Control-Allow-Origin": allowedOrigin,

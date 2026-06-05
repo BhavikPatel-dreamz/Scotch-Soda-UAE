@@ -16,6 +16,12 @@ import {
 } from "../../utils/store.server";
 import { getCorsHeaders } from "../../utils/cors.server";
 import { QIVOS_BESIDE_API_BASE_URL } from "../../utils/constants";
+import {
+  isQivosLogicalFailure,
+  extractStringValue,
+  extractObjectRecord,
+  findFirstNestedValue,
+} from "../../utils/qivos-utils.server";
 
 const QIVOS_PERSONS_URL = `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/persons`;
 const QIVOS_PERSON_DETAILS_BASE_URL =
@@ -54,68 +60,11 @@ function buildQivosRequestBody(body: PersonCreateBody) {
   delete qivosBody.customerId;
   delete qivosBody.shop;
   delete qivosBody.metafieldNamespace;
+  delete qivosBody.countryCode;
   delete qivosBody.email;
   delete qivosBody.phone;
+  delete qivosBody.loyaltySync;
   return qivosBody;
-}
-
-function extractStringValue(value: unknown): string | undefined {
-  if (typeof value === "string" && value.trim()) {
-    return value.trim();
-  }
-
-  if (typeof value === "number") {
-    return String(value);
-  }
-
-  return undefined;
-}
-
-function extractObjectRecord(
-  value: unknown,
-): Record<string, unknown> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-
-  return value as Record<string, unknown>;
-}
-
-function findFirstNestedValue(
-  value: unknown,
-  candidateKeys: string[],
-): string | undefined {
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const nested = findFirstNestedValue(item, candidateKeys);
-      if (nested) {
-        return nested;
-      }
-    }
-
-    return undefined;
-  }
-
-  const record = extractObjectRecord(value);
-  if (!record) {
-    return undefined;
-  }
-
-  for (const key of candidateKeys) {
-    const directValue = extractStringValue(record[key]);
-    if (directValue) {
-      return directValue;
-    }
-  }
-
-  for (const nestedValue of Object.values(record)) {
-    const nested = findFirstNestedValue(nestedValue, candidateKeys);
-    if (nested) {
-      return nested;
-    }
-  }
-
-  return undefined;
 }
 
 async function parseResponseBody(response: Response): Promise<unknown> {
@@ -242,6 +191,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   const qivosBody = buildQivosRequestBody(requestBody);
+  console.log("[persons.create] Forwarding payload to QIVOS", {
+    hasTelephoneList: Array.isArray(qivosBody.telephoneList),
+    hasEmailList: Array.isArray(qivosBody.emailList),
+    hasLoyaltyMembershipData: Array.isArray(qivosBody.loyaltyMembershipData),
+    hasConsentList: Array.isArray(qivosBody.consentList),
+    customerId: requestBody.customerId,
+    shop: requestBody.shop,
+    payload: JSON.stringify(qivosBody), // Log full payload for debugging
+  });
 
   const thirdPartyResponse = await sendQivosRequestWithRetry(
     QIVOS_PERSONS_URL,
@@ -253,9 +211,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   );
 
   let responseData: unknown = await parseResponseBody(thirdPartyResponse);
+  
+  if (!thirdPartyResponse.ok || isQivosLogicalFailure(responseData)) {
+    console.error("[persons.create] QIVOS creation failed", {
+      status: thirdPartyResponse.status,
+      responseData: JSON.stringify(responseData),
+    });
+  }
+
   let customerSyncSource: unknown = responseData;
 
-  if (thirdPartyResponse.ok) {
+  if (thirdPartyResponse.ok && !isQivosLogicalFailure(responseData)) {
     const personQCCode =
       findFirstNestedValue(responseData, [
         "personQCCode",
@@ -316,6 +282,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         requestBody,
         customerSyncSource,
       );
+      console.log("[persons.create] customerMetafieldSync", customerMetafieldSync);
     } catch (error) {
       let errorMessage: string;
       if (error instanceof Error) {

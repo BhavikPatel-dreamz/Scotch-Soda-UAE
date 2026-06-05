@@ -113,7 +113,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       toShopifyCustomerGid(proxyContext?.customerId) ??
       undefined,
   };
-
   await ensureStoreRecord(request, requestBody as Record<string, unknown>);
 
   // ── Extract codes from pathname ─────────────────────────────────────────
@@ -150,46 +149,66 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   // ── QIVOS status update — always fires ──────────────────────────────────
-  const thirdPartyUrl = `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/persons/${encodeURIComponent(personQCCode)}/loyalty-membership/${encodeURIComponent(loyaltyQCCode)}/status?active=${active}`;
-  const qivosBody = JSON.stringify({ active: { value: active } });
+const thirdPartyUrl =
+  `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/persons/${encodeURIComponent(
+    personQCCode,
+  )}/loyalty-membership/${encodeURIComponent(
+    loyaltyQCCode,
+  )}/status`;
 
-  async function sendStatusUpdate(token: string) {
-    return fetch(thirdPartyUrl, {
-      method: "PUT",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        "x-jwt-token": token,
-      },
-      body: qivosBody,
-    });
-  }
+const qivosBody = JSON.stringify({
+  active: {
+    value: String(active), // "true" | "false"
+  },
+});
 
-  let thirdPartyResponse: Response;
+async function sendStatusUpdate(token: string) {
+  return fetch(thirdPartyUrl, {
+    method: "PUT",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "x-jwt-token": token,
+    },
+    body: qivosBody,
+  });
+}
 
-  try {
-    const token = await getQIVOSToken();
-    thirdPartyResponse = await sendStatusUpdate(token);
+let thirdPartyResponse: Response;
 
-    if (thirdPartyResponse.status === 401) {
-      console.warn(
-        "QIVOS loyalty status update returned 401; refreshing token and retrying.",
-      );
-      const refreshedToken = await refreshQIVOSToken();
-      thirdPartyResponse = await sendStatusUpdate(refreshedToken);
-    }
-  } catch (error) {
-    console.error("Failed to complete QIVOS loyalty status update:", error);
-    return new Response(
-      JSON.stringify({
-        error: "Failed to complete QIVOS loyalty status update",
-      }),
-      {
-        status: 500,
-        headers: { "Content-Type": "application/json", ...corsHeaders },
-      },
+try {
+  const token = await getQIVOSToken();
+
+  thirdPartyResponse = await sendStatusUpdate(token);
+
+  if (thirdPartyResponse.status === 401) {
+    console.warn(
+      "QIVOS loyalty status update returned 401; refreshing token and retrying.",
     );
+
+    const refreshedToken = await refreshQIVOSToken();
+
+    thirdPartyResponse = await sendStatusUpdate(refreshedToken);
   }
+} catch (error) {
+  console.error(
+    "Failed to complete QIVOS loyalty status update:",
+    error,
+  );
+
+  return new Response(
+    JSON.stringify({
+      error: "Failed to complete QIVOS loyalty status update",
+    }),
+    {
+      status: 500,
+      headers: {
+        "Content-Type": "application/json",
+        ...corsHeaders,
+      },
+    },
+  );
+}
 
   // ── Parse QIVOS response ────────────────────────────────────────────────
   const text = await thirdPartyResponse.text();

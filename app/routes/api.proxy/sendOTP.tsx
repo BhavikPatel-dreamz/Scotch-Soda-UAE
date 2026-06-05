@@ -86,24 +86,29 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     );
   }
 
-  const thirdPartyResponse = await fetch(
-    `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/otp/request`,
-    {
-      method: "POST",
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        "x-jwt-token": token,
-      },
-      body: JSON.stringify({
-        mobileNumber,
-        countryCode,
-        otpProfileCode,
-        type,
-        languageCode,
-      }),
+  const activate =
+    (typeof body.activate === "boolean" && body.activate) ||
+    (typeof body.activate === "number" && body.activate === 1);
+
+  const otpRequestUrl = `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/otp/request${
+    activate ? "?activate=1" : ""
+  }`;
+
+  const thirdPartyResponse = await fetch(otpRequestUrl, {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "x-jwt-token": token,
     },
-  );
+    body: JSON.stringify({
+      mobileNumber,
+      countryCode,
+      otpProfileCode,
+      type,
+      languageCode,
+    }),
+  });
 
   const text = await thirdPartyResponse.text();
 
@@ -113,6 +118,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     responseData = JSON.parse(text);
   } catch {
     responseData = { raw: text };
+  }
+
+  if (!thirdPartyResponse.ok) {
+    console.error("[sendOTP] QIVOS OTP request failed", {
+      status: thirdPartyResponse.status,
+      requestBody: {
+        mobileNumber,
+        countryCode,
+        otpProfileCode,
+        type,
+        languageCode,
+      },
+      responseData,
+    });
   }
 
   return new Response(JSON.stringify(responseData), {

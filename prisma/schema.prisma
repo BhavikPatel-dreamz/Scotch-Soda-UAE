@@ -10,7 +10,7 @@ generator client {
 // See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
   provider = "postgresql"
-  url      = env("DBURL")
+  url      = env("DATABASE_URL")
 }
 
 model Store {
@@ -54,4 +54,36 @@ model QIVOSToken {
   refreshTokenExpiresAt DateTime  // When refresh token expires
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
+}
+
+model Order {
+  id                String   @id @default(cuid())
+  shopDomain        String
+  shopifyOrderId    String
+  orderName         String?
+  orderNumber       String?
+  customerShopifyId String?
+  customerEmail     String?
+  currency          String?
+  subtotalPrice     String?
+  totalPrice        String?
+  discountTotal     String?
+  financialStatus   String?
+  fulfillmentStatus String?
+  lastWebhookTopic  String?
+  erpStatus         String   @default("PENDING")
+  loyaltyStatus     String   @default("NOT_POSTED")
+  paidAt            DateTime?
+  erpSyncedAt       DateTime?
+  loyaltyPostedAt   DateTime?
+  lastError         String?
+  rawPayload        Json
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([shopDomain, shopifyOrderId])
+  @@index([shopDomain])
+  @@index([erpStatus])
+  @@index([loyaltyStatus])
+  @@index([financialStatus])
 }

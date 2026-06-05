@@ -174,7 +174,6 @@ async function sendQivosRequest(
 
 async function parseResponseBody(response: Response): Promise<unknown> {
   const text = await response.text();
-  console.log(`Raw response body from111 ${response.url}:`, text);
   try {
     return JSON.parse(text);
   } catch {
