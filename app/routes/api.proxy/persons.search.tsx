@@ -1141,7 +1141,7 @@ const inactiveMembershipSyncResults: any[] = [];
       redeemPoint: qivosPointBalance,
       canRedeem: qivosCanRedeem === true,
       tier: qivosTier ?? undefined,
-      loyaltySync: false,
+      loyaltySync: true,
       firstName: qivosFirstName,
       lastName: qivosLastName,
       email: qivosEmail ?? shopifyCustomer?.email ?? undefined,

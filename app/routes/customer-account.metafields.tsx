@@ -149,7 +149,6 @@ function extractCanRedeemFromPerson(person: unknown): boolean | undefined {
 
   if (!Array.isArray(loyaltyMembershipData)) return undefined;
 
-  // active:false membership પણ CANREDEEM attribute ધરાવી શકે છે — skip નહીં.
   for (const membership of loyaltyMembershipData) {
     if (!membership || typeof membership !== "object") continue;
 
@@ -954,7 +953,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     typeof sessionToken.dest === "string" ? sessionToken.dest : undefined,
   );
   const customerId = body.customerId
-    ? String(body.customerId)
+    ? toShopifyCustomerGid(String(body.customerId))
     : typeof sessionToken.sub === "string"
       ? toShopifyCustomerGid(sessionToken.sub)
       : undefined;

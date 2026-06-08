@@ -1,11 +1,14 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
-import { upsertShopifyOrderFromWebhook } from "../utils/order-sync.server";
+import {
+  isOrderWebhookTopic,
+  upsertShopifyOrderFromWebhook,
+} from "../utils/order-sync.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { topic, shop, payload } = await authenticate.webhook(request);
 
-  if (topic === "orders/updated") {
+  if (isOrderWebhookTopic(topic, "ORDERS_UPDATED")) {
     const order = await upsertShopifyOrderFromWebhook({
       shop,
       topic,

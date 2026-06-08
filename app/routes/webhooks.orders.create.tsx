@@ -7,8 +7,8 @@ import {
 
 export async function action({ request }: ActionFunctionArgs) {
   try {
-    console.log("[orders/paid] webhook route hit");
-    console.log("[orders/paid] webhook headers", {
+    console.log("[orders/create] webhook route hit");
+    console.log("[orders/create] webhook headers", {
       topic: request.headers.get("x-shopify-topic"),
       shop: request.headers.get("x-shopify-shop-domain"),
       webhookId: request.headers.get("x-shopify-webhook-id"),
@@ -16,21 +16,23 @@ export async function action({ request }: ActionFunctionArgs) {
       contentType: request.headers.get("content-type"),
       userAgent: request.headers.get("user-agent"),
     });
+
     const { topic, shop, payload } = await authenticate.webhook(request);
-    console.log("[orders/paid] webhook authenticated successfully", { topic, shop,payload });
-    if (isOrderWebhookTopic(topic, "ORDERS_PAID")) {
+
+    if (isOrderWebhookTopic(topic, "ORDERS_CREATE")) {
       const order = await upsertShopifyOrderFromWebhook({
         shop,
         topic,
         payload: payload as Record<string, unknown>,
       });
 
-      console.log(`Stored paid order ${order.shopifyOrderId} for shop ${shop}`);
+      console.log(order, "order11111");
+      console.log(`Stored created order ${order.shopifyOrderId} for shop ${shop}`);
     }
 
     return new Response("OK", { status: 200 });
   } catch (error) {
-    console.error("[orders/paid] webhook authentication failed:", error);
+    console.error("[orders/create] webhook authentication failed:", error);
     return new Response("Unauthorized", { status: 401 });
   }
 }

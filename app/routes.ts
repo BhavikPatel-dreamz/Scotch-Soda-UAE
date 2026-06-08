@@ -23,7 +23,9 @@ export default [
   route("webhooks/app/uninstalled", "routes/webhooks.app.uninstalled.tsx"),
   route("webhooks/app/scopes_update", "routes/webhooks.app.scopes_update.tsx"),
   route("webhooks/customers/create", "routes/webhooks.customers.create.tsx"),
+  route("webhooks/orders/create", "routes/webhooks.orders.create.tsx"),
   route("webhooks/orders/paid", "routes/webhooks.orders.paid.tsx"),
+  route("webhooks/orders/cancelled", "routes/webhooks.orders.cancelled.tsx"),
   route("webhooks/orders/updated", "routes/webhooks.orders.updated.tsx"),
   route("webhooks/shop/update", "routes/webhooks.shop.update.tsx"),
 

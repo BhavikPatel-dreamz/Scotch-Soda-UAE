@@ -981,12 +981,22 @@ async function setCustomerIdentityMetafields(
     {
       key: "can_redeem",
       type: "boolean",
-      value: values.canRedeem === true ? "true" : "false",
+      value:
+        values.canRedeem === undefined
+          ? undefined
+          : values.canRedeem
+            ? "true"
+            : "false",
     },
     {
       key: "loyalty_sync",
       type: "boolean",
-      value: values.loyaltySync === true ? "true" : "false",
+      value:
+        values.loyaltySync === undefined
+          ? undefined
+          : values.loyaltySync
+            ? "true"
+            : "false",
     },
   ]
     .filter((item) => item.value !== undefined)
@@ -1024,7 +1034,6 @@ async function setCustomerIdentityMetafields(
     { variables: { metafields: metafieldsToSet } },
   );
 
-  // ✅ 401 check પહેલા કરો
   if (metafieldsResponse.status === 401) {
     throw new Error(
       `Shopify Admin API authentication failed (401) for this shop. ` +
