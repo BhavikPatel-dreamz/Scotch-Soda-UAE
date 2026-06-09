@@ -26,7 +26,6 @@ export async function action({ request }: ActionFunctionArgs) {
         payload: payload as Record<string, unknown>,
       });
 
-      console.log(order, "order11111");
       console.log(`Stored created order ${order.shopifyOrderId} for shop ${shop}`);
     }
 

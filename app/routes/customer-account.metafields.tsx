@@ -1,6 +1,5 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
-import { creditCustomerStoreCredit } from "../utils/customer-credit.server";
 import {
   getCustomerIdentityMetafields,
   saveCustomerIdentityMetafields,
@@ -24,6 +23,7 @@ import {
   fetchShopifyCustomerProfile,
   qivosPersonNeedsShopifyProfileBackfill,
 } from "../utils/qivos-person-backfill.server";
+import { creditCustomerStoreCredit } from "app/utils/customer-credit.server";
 
 const QIVOS_PERSONS_SEARCH_URL = `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/persons/search`;
 
@@ -120,8 +120,7 @@ function extractPointBalanceFromPerson(person: unknown): string | undefined {
 
   if (!Array.isArray(loyaltyMembershipData)) return undefined;
 
-  // active:false membership પણ pointBalance ધરાવી શકે છે — skip નહીં કરવું.
-  // needsActivation flag અલગ handle થાય છે collectInactiveLoyaltyMemberships માં.
+
   for (const membership of loyaltyMembershipData) {
     if (!membership || typeof membership !== "object") continue;
 
@@ -131,10 +130,10 @@ function extractPointBalanceFromPerson(person: unknown): string | undefined {
       typeof record.pointBalance === "string" &&
       record.pointBalance.trim().length > 0
     ) {
-      return record.pointBalance.trim();
+      return (record.pointBalance.trim());
     }
     if (typeof record.pointBalance === "number") {
-      return String(record.pointBalance);
+      return String(record.pointBalance * 10);
     }
   }
 
@@ -530,7 +529,7 @@ async function syncCustomerFromQivosSearch(params: {
     criteriaList: [
       {
         criteriaType: "TELEPHONE",
-        countryCode: metafields.countryCode?.trim().toLowerCase() || "in",
+        countryCode: metafields.countryCode?.trim().toLowerCase() || "ae",
         telephoneNumber: phone,
         telephoneType: "MOBILE",
         isPrimary: true,
