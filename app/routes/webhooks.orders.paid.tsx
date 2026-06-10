@@ -17,7 +17,6 @@ export async function action({ request }: ActionFunctionArgs) {
       userAgent: request.headers.get("user-agent"),
     });
     const { topic, shop, payload } = await authenticate.webhook(request);
-    console.log("[orders/paid] webhook authenticated successfully", { topic, shop,payload });
     if (isOrderWebhookTopic(topic, "ORDERS_PAID")) {
       const order = await upsertShopifyOrderFromWebhook({
         shop,

@@ -1,6 +1,6 @@
 import { getAdminGraphqlClient } from "./shopify-admin.server";
 
-const SHOPIFY_CURRENCY_CODE = "INR";
+const SHOPIFY_CURRENCY_CODE = "AED";
 const POINTS_TO_CREDIT_RATE = 0.1;
 
 export type CustomerCreditInput = {
@@ -18,7 +18,6 @@ export type CustomerCreditResult = {
   data?: unknown;
   previousBalance?: number;
   finalBalance?: string;
-  
 };
 
 function toMoneyAmount(amount: number): string {
@@ -144,20 +143,25 @@ export async function creditCustomerStoreCredit({
   redeemPoints,
 }: CustomerCreditInput): Promise<CustomerCreditResult> {
   const adminClient = await getAdminGraphqlClient(shop);
-  const creditAmount = Number((redeemPoints * POINTS_TO_CREDIT_RATE).toFixed(2));
+  const creditAmount = Number(
+    (redeemPoints * POINTS_TO_CREDIT_RATE).toFixed(2),
+  );
 
   if (!Number.isFinite(creditAmount) || creditAmount <= 0) {
-    throw new Error(`Invalid credit amount derived from redeem points: ${redeemPoints}`);
+    throw new Error(
+      `Invalid credit amount derived from redeem points: ${redeemPoints}`,
+    );
   }
 
   try {
-    // Step 1: Get previous balance
+    // Step 1: Get previous balance + account ID
     const balanceResponse = await adminClient.graphql(
       `#graphql
         query GetStoreCreditBalance($id: ID!) {
           customer(id: $id) {
             storeCreditAccounts(first: 1) {
               nodes {
+                id
                 balance {
                   amount
                   currencyCode
@@ -175,6 +179,7 @@ export async function creditCustomerStoreCredit({
         customer?: {
           storeCreditAccounts?: {
             nodes?: Array<{
+              id?: string;
               balance?: {
                 amount?: string;
                 currencyCode?: string;
@@ -188,17 +193,39 @@ export async function creditCustomerStoreCredit({
 
     if (balanceData.errors?.length) {
       throw new Error(
-        balanceData.errors.map((error) => error.message).filter(Boolean).join(", "),
+        balanceData.errors
+          .map((error) => error.message)
+          .filter(Boolean)
+          .join(", "),
       );
     }
 
-    const previousBalance = parseFloat(
-      balanceData.data?.customer?.storeCreditAccounts?.nodes?.[0]?.balance?.amount ??
-        "0",
-    );
+    const response = await adminClient.graphql(`
+  query {
+    shop {
+      currencyCode
+      currencyFormats {
+        moneyFormat
+        moneyWithCurrencyFormat
+      }
+    }
+  }
+`);
+
+    const { data } = await response.json();
+    const accountNode =
+      balanceData.data?.customer?.storeCreditAccounts?.nodes?.[0];
+
+    const storeCreditAccountId = accountNode?.id;
+    const storeCreditCurrencyCode = accountNode?.balance?.currencyCode || data.shop.currencyCode;
+    const previousBalance = parseFloat(accountNode?.balance?.amount ?? "0");
 
     // Step 2: Remove old balance if it exists
     if (previousBalance > 0) {
+      if (!storeCreditAccountId) {
+        throw new Error("Store credit account ID not found, cannot debit.");
+      }
+
       const removeResponse = await adminClient.graphql(
         `#graphql
           mutation RemoveOldCredit(
@@ -218,11 +245,11 @@ export async function creditCustomerStoreCredit({
         `,
         {
           variables: {
-            id: customerId,
+            id: storeCreditAccountId,
             debitInput: {
               debitAmount: {
                 amount: toMoneyAmount(previousBalance),
-                currencyCode: SHOPIFY_CURRENCY_CODE,
+                currencyCode: storeCreditCurrencyCode,
               },
             },
           },
@@ -243,19 +270,27 @@ export async function creditCustomerStoreCredit({
 
       if (removeData.errors?.length) {
         throw new Error(
-          removeData.errors.map((error) => error.message).filter(Boolean).join(", "),
+          removeData.errors
+            .map((error) => error.message)
+            .filter(Boolean)
+            .join(", "),
         );
       }
 
-      const removeErrors = removeData.data?.storeCreditAccountDebit?.userErrors ?? [];
+      const removeErrors =
+        removeData.data?.storeCreditAccountDebit?.userErrors ?? [];
       if (removeErrors.length > 0) {
         throw new Error(
-          removeErrors.map((error) => `${error.field?.join(".")}: ${error.message}`).join(", "),
+          removeErrors
+            .map((error) => `${error.field?.join(".")}: ${error.message}`)
+            .join(", "),
         );
       }
     }
 
     // Step 3: Add new credit amount
+    const creditId = storeCreditAccountId ?? customerId;
+
     const creditResponse = await adminClient.graphql(
       `#graphql
         mutation StoreCreditAccountCredit(
@@ -286,11 +321,11 @@ export async function creditCustomerStoreCredit({
       `,
       {
         variables: {
-          id: customerId,
+          id: creditId,
           creditInput: {
             creditAmount: {
               amount: toMoneyAmount(creditAmount),
-              currencyCode: SHOPIFY_CURRENCY_CODE,
+              currencyCode: storeCreditCurrencyCode,
             },
           },
         },
@@ -325,7 +360,10 @@ export async function creditCustomerStoreCredit({
 
     if (creditData.errors?.length) {
       throw new Error(
-        creditData.errors.map((error) => error.message).filter(Boolean).join(", "),
+        creditData.errors
+          .map((error) => error.message)
+          .filter(Boolean)
+          .join(", "),
       );
     }
 
@@ -333,7 +371,9 @@ export async function creditCustomerStoreCredit({
       creditData.data?.storeCreditAccountCredit?.userErrors ?? [];
     if (userErrors.length > 0) {
       throw new Error(
-        userErrors.map((error) => `${error.field?.join(".")}: ${error.message}`).join(", "),
+        userErrors
+          .map((error) => `${error.field?.join(".")}: ${error.message}`)
+          .join(", "),
       );
     }
 

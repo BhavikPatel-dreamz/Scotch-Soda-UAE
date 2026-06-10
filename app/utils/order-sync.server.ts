@@ -278,6 +278,14 @@ async function reserveQivosPoints({
 
   const responseData = await parseResponseBody(response);
 
+  // ✅ 409 = already reserved on QIVOS side — treat as success (idempotent)
+  if (response.status === 409) {
+    console.warn(
+      `[reserveQivosPoints] 409 - Points already reserved for order ${orderNumber}. Treating as success.`,
+    );
+    return responseData;
+  }
+
   if (!response.ok) {
     throw new Error(
       `QIVOS reserve-points failed (${response.status}): ${JSON.stringify(responseData)}`,
@@ -359,7 +367,28 @@ export async function upsertShopifyOrderFromWebhook({
   });
 
   if (normalizedTopic === ORDER_WEBHOOK_TOPICS.paid && customerShopifyId) {
-    console.log(`[orders/paid] Processing paid order ${shopifyOrderId} for customer ${customerShopifyId}`);
+    console.log(
+      `[orders/paid] Processing paid order ${shopifyOrderId} for customer ${customerShopifyId}`,
+    );
+
+    // ✅ Idempotency check: DB ma already "RESERVED" hoy to duplicate webhook skip karo
+    const existingOrder = await prisma.order.findUnique({
+      where: {
+        shopDomain_shopifyOrderId: {
+          shopDomain: shop,
+          shopifyOrderId,
+        },
+      },
+      select: { loyaltyStatus: true },
+    });
+
+    if (existingOrder?.loyaltyStatus === "RESERVED") {
+      console.log(
+        `[orders/paid] Skipping QIVOS reserve-points for order ${shopifyOrderId}: already RESERVED (duplicate webhook ignored)`,
+      );
+      return order;
+    }
+
     try {
       const customerMetafields = await getCustomerIdentityMetafields({
         shop,
@@ -381,10 +410,11 @@ export async function upsertShopifyOrderFromWebhook({
         const reserveResponse = await reserveQivosPoints({
           loyaltyMemberCode,
           orderNumber: orderNumber ?? shopifyOrderId,
-          pointsToReserve: pointsToReserve, // Convert to points
+          pointsToReserve: pointsToReserve*10,
           reservationType: "REDEEM",
         });
-        const reservedPoints = pointsToReserve * 10;
+
+        const reservedPoints = pointsToReserve
         const updatedRedeemPoint = toUpdatedRedeemPoint(
           customerMetafields.redeemPoint,
           reservedPoints,

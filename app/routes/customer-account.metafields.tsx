@@ -133,7 +133,7 @@ function extractPointBalanceFromPerson(person: unknown): string | undefined {
       return (record.pointBalance.trim());
     }
     if (typeof record.pointBalance === "number") {
-      return String(record.pointBalance * 10);
+      return String(record.pointBalance);
     }
   }
 

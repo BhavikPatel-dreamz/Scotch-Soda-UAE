@@ -1155,7 +1155,6 @@ export async function syncCustomerMetafields(
   if (!customerId) {
     try {
       const customer = await createShopifyCustomer(adminClient, profile);
-      console.log(customer, "customer---99891");
       customerId = customer.id;
       customerCreated = true;
     } catch (error: any) {
