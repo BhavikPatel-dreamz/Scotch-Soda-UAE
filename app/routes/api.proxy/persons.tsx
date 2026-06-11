@@ -279,7 +279,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     try {
       customerMetafieldSync = await syncCustomerMetafields(
         request,
-        requestBody,
+        { ...requestBody, loyaltySync: true },
         customerSyncSource,
       );
       console.log("[persons.create] customerMetafieldSync", customerMetafieldSync);
