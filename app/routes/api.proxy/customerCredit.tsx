@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { authenticateApiProxyRequest } from "../../utils/api-proxy-auth.server";
-import { getCorsHeaders } from "../../utils/cors.server";
+import { CORS_HEADERS } from "../../utils/cors.server";
 import {
   creditCustomerStoreCredit,
   getStoreCreditPermissionError,
@@ -18,18 +18,18 @@ type CustomerCreditBody = {
 };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const corsHeaders = getCorsHeaders(request.headers.get("Origin"), "POST, OPTIONS");
+  // const corsHeaders = getCorsHeaders(request.headers.get("Origin"), "POST, OPTIONS");
 
   if (request.method === "OPTIONS") {
     return new Response(null, {
       status: 204,
-      headers: corsHeaders,
+      headers: CORS_HEADERS,
     });
   }
 
   return new Response("Method Not Allowed", {
     status: 405,
-    headers: corsHeaders,
+    headers: CORS_HEADERS,
   });
 };
 
@@ -49,14 +49,14 @@ function toPositiveNumber(value: number | string | undefined): number | null {
 }
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const corsHeaders = getCorsHeaders(request.headers.get("Origin"), "POST, OPTIONS");
+  // const corsHeaders = getCorsHeaders(request.headers.get("Origin"), "POST, OPTIONS");
 
   if (request.method !== "POST") {
     return new Response(JSON.stringify({ error: "Method not allowed" }), {
       status: 405,
       headers: {
         "Content-Type": "application/json",
-        ...corsHeaders,
+        ...CORS_HEADERS,
       },
     });
   }
@@ -69,7 +69,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       status: 400,
       headers: {
         "Content-Type": "application/json",
-        ...corsHeaders,
+        ...CORS_HEADERS,
       },
     });
   }
@@ -87,7 +87,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         status: error.status,
         headers: {
           "Content-Type": "application/json",
-          ...corsHeaders,
+          ...CORS_HEADERS,
         },
       });
     }
@@ -111,7 +111,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         status: 400,
         headers: {
           "Content-Type": "application/json",
-          ...corsHeaders,
+          ...CORS_HEADERS,
         },
       },
     );
@@ -130,7 +130,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         status: 200,
         headers: {
           "Content-Type": "application/json",
-          ...corsHeaders,
+          ...CORS_HEADERS,
         },
       },
     );
@@ -148,7 +148,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
           status: 403,
           headers: {
             "Content-Type": "application/json",
-            ...corsHeaders,
+            ...CORS_HEADERS,
           },
         },
       );
@@ -163,7 +163,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         status: 500,
         headers: {
           "Content-Type": "application/json",
-          ...corsHeaders,
+          ...CORS_HEADERS,
         },
       },
     );

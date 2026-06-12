@@ -3,7 +3,7 @@ import { authenticateApiProxyRequest } from "../../utils/api-proxy-auth.server";
 import { getQIVOSToken } from "../../utils/qivos-token.server";
 import { ensureStoreRecord, resolveCurrentShop } from "../../utils/store.server";
 import { getAdminGraphqlClient, type AdminGraphqlClient } from "../../utils/shopify-admin.server";
-import { getCorsHeaders } from "../../utils/cors.server";
+import { CORS_HEADERS } from "../../utils/cors.server";
 import { QIVOS_BESIDE_API_BASE_URL } from "../../utils/constants";
 import {
   backfillMissingQivosPersonDetails,
@@ -55,18 +55,17 @@ type SearchIdentifier =
   | { type: "email"; value: string };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const corsHeaders = getCorsHeaders(request.headers.get("Origin"));
 
   if (request.method === "OPTIONS") {
     return new Response(null, {
       status: 204,
-      headers: corsHeaders,
+      headers: CORS_HEADERS,
     });
   }
 
   return new Response("Method Not Allowed", {
     status: 405,
-    headers: corsHeaders,
+    headers: CORS_HEADERS,
   });
 };
 
@@ -888,12 +887,11 @@ function emailsMatch(
 // ─── Action ───────────────────────────────────────────────────────────────────
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const corsHeaders = getCorsHeaders(request.headers.get("Origin"));
 
   if (request.method !== "POST") {
     return new Response("Method Not Allowed", {
       status: 405,
-      headers: corsHeaders,
+      headers: CORS_HEADERS,
     });
   }
 
@@ -903,7 +901,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   } catch {
     return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
       status: 400,
-      headers: { "Content-Type": "application/json", ...corsHeaders },
+      headers: { "Content-Type": "application/json", ...CORS_HEADERS },
     });
   }
 
@@ -935,7 +933,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }),
       {
         status: 400,
-        headers: { "Content-Type": "application/json", ...corsHeaders },
+        headers: { "Content-Type": "application/json", ...CORS_HEADERS },
       },
     );
   }
@@ -951,7 +949,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       }),
       {
         status: 400,
-        headers: { "Content-Type": "application/json", ...corsHeaders },
+        headers: { "Content-Type": "application/json", ...CORS_HEADERS },
       },
     );
   }
@@ -966,7 +964,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       JSON.stringify({ error: "Failed to obtain QIVOS token" }),
       {
         status: 500,
-        headers: { "Content-Type": "application/json", ...corsHeaders },
+        headers: { "Content-Type": "application/json", ...CORS_HEADERS },
       },
     );
   }
@@ -1152,7 +1150,7 @@ const inactiveMembershipSyncResults: any[] = [];
       status: thirdPartyResponse.status,
       headers: {
         "Content-Type": "application/json",
-        ...corsHeaders,
+        ...CORS_HEADERS,
       },
     },
   );

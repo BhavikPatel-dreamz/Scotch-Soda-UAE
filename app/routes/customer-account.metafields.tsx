@@ -15,7 +15,7 @@ import {
   toShopifyCustomerGid,
 } from "../utils/store.server";
 import { getAdminGraphqlClient } from "../utils/shopify-admin.server";
-import { getCorsHeaders } from "../utils/cors.server";
+import { CORS_HEADERS } from "../utils/cors.server";
 import { getQIVOSToken } from "../utils/qivos-token.server";
 import { QIVOS_BESIDE_API_BASE_URL } from "../utils/constants";
 import {
@@ -120,7 +120,6 @@ function extractPointBalanceFromPerson(person: unknown): string | undefined {
 
   if (!Array.isArray(loyaltyMembershipData)) return undefined;
 
-
   for (const membership of loyaltyMembershipData) {
     if (!membership || typeof membership !== "object") continue;
 
@@ -130,7 +129,7 @@ function extractPointBalanceFromPerson(person: unknown): string | undefined {
       typeof record.pointBalance === "string" &&
       record.pointBalance.trim().length > 0
     ) {
-      return (record.pointBalance.trim());
+      return record.pointBalance.trim();
     }
     if (typeof record.pointBalance === "number") {
       return String(record.pointBalance);
@@ -337,7 +336,6 @@ async function fetchFreshLoyaltyBalanceFromQivos(params: {
 }> {
   const TAG = "[fetchFreshLoyaltyBalance]";
 
-  // ── STEP 1: Normalize inputs ──────────────────────────────────────────────
   const phone = params.phone;
   const countryCode = params.countryCode?.trim().toLowerCase() || "in";
 
@@ -347,13 +345,11 @@ async function fetchFreshLoyaltyBalanceFromQivos(params: {
     countryCode,
   });
 
-  // Guard: phone must be present
   if (!phone) {
     console.warn(`${TAG} STEP 1 — ABORT: no phone available`);
     return { inactiveMemberships: [] };
   }
 
-  // ── STEP 2: Get QIVOS token ───────────────────────────────────────────────
   let token: string;
   try {
     token = await getQIVOSToken();
@@ -363,7 +359,6 @@ async function fetchFreshLoyaltyBalanceFromQivos(params: {
     return { inactiveMemberships: [] };
   }
 
-  // ── STEP 3: Build + log request payload ──────────────────────────────────
   const payload: QivosSearchPayload = {
     criteriaList: [
       {
@@ -380,7 +375,6 @@ async function fetchFreshLoyaltyBalanceFromQivos(params: {
 
   console.log(`${TAG} STEP 3 — request payload:`, JSON.stringify(payload));
 
-  // ── STEP 4: HTTP call ─────────────────────────────────────────────────────
   let response: Response;
   try {
     response = await fetch(QIVOS_PERSONS_SEARCH_URL, {
@@ -399,7 +393,6 @@ async function fetchFreshLoyaltyBalanceFromQivos(params: {
 
   console.log(`${TAG} STEP 4 — HTTP status: ${response.status}`);
 
-  // ── STEP 5: Read + parse response body ───────────────────────────────────
   let rawText: string;
   try {
     rawText = await response.text();
@@ -421,11 +414,7 @@ async function fetchFreshLoyaltyBalanceFromQivos(params: {
   }
 
   const responseData = parseJsonSafely(rawText);
-  console.log(`${TAG} STEP 5 — parsed responseData type:`, typeof responseData);
-
-  // ── STEP 6: Validate shape ────────────────────────────────────────────────
   const hasResults = qivosSearchHasResults(responseData);
-  console.log(`${TAG} STEP 6 — qivosSearchHasResults:`, hasResults);
 
   if (!hasResults) {
     const debugPayload = (responseData as { payload?: { data?: unknown } })
@@ -444,11 +433,9 @@ async function fetchFreshLoyaltyBalanceFromQivos(params: {
     return { inactiveMemberships: [] };
   }
 
-  // ── STEP 7: Extract persons ───────────────────────────────────────────────
   const persons = extractQivosPersons(responseData);
   console.log(`${TAG} STEP 7 — extracted ${persons.length} person(s)`);
 
-  // ── STEP 8: Pull pointBalance + canRedeem + inactiveMemberships ───────────
   let pointBalance: string | undefined;
   let canRedeem: boolean | undefined;
   const inactiveMemberships: Array<{
@@ -511,7 +498,6 @@ async function syncCustomerFromQivosSearch(params: {
   const { request, shop, customerId, metafields, allowQivosBackfill } = params;
   const phone = normalizePhoneForQivos(metafields.phone);
 
-  // Phone is required — email fallback removed
   if (!phone) {
     return {
       synced: false,
@@ -670,12 +656,58 @@ function extractShopFromDest(dest: string | undefined): string | undefined {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared response builder — used by both quickLoad and full loader paths.
+// ─────────────────────────────────────────────────────────────────────────────
+function buildSuccessResponse(params: {
+  shop: string;
+  customerId: string;
+  metafields: CustomerIdentitySnapshot;
+  availableCountries: { code: string; name: string }[];
+  redeemPoint: string | undefined;
+  canRedeem: boolean;
+  qivosSyncApplied: boolean;
+  inactiveMemberships: Array<{ personQCCode: string; loyaltyQCCode: string }>;
+  backfillApplied: boolean;
+  backfillRequired: boolean;
+  personDetailsMissing: boolean | undefined;
+  pointBalanceChanged: boolean;
+  canRedeemChanged: boolean;
+  sessionToken: { sub?: unknown; dest?: unknown };
+  quickLoad?: boolean;
+}) {
+  const shopCountryCode = params.availableCountries[0]?.code;
+  return JSON.stringify({
+    ok: true,
+    shop: params.shop,
+    customerId: params.customerId,
+    ...params.metafields,
+    availableCountries: params.availableCountries,
+    shopCountryCode,
+    pointBalance: params.redeemPoint,
+    redeemPoint: params.redeemPoint,
+    canRedeem: params.canRedeem,
+    qivosSyncApplied: params.qivosSyncApplied,
+    qivosBackfillApplied: params.backfillApplied,
+    qivosBackfillRequired: params.backfillRequired,
+    qivosPersonDetailsMissing: params.personDetailsMissing,
+    inactiveMemberships: params.inactiveMemberships,
+    needsActivation: params.inactiveMemberships.length > 0,
+    debug: {
+      quickLoad: params.quickLoad ?? false,
+      tokenSub: params.sessionToken.sub ?? null,
+      tokenDest: params.sessionToken.dest ?? null,
+      availableCountries: params.availableCountries,
+      shopCountryCode: shopCountryCode ?? null,
+      pointBalanceChanged: params.pointBalanceChanged,
+      canRedeemChanged: params.canRedeemChanged,
+    },
+  });
+}
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (request.method === "OPTIONS") {
-    return new Response(null, {
-      status: 204,
-      headers: getCorsHeaders(request.headers.get("Origin"), "GET, OPTIONS"),
-    });
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
   }
 
   const { cors, sessionToken } =
@@ -685,6 +717,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const requestedCustomerId = url.searchParams.get("customerId");
   const allowQivosBackfill =
     url.searchParams.get("allowQivosBackfill") === "1";
+
+  // ── NEW: quickLoad param — return DB-only data immediately, skip QIVOS ──
+  const quickLoad = url.searchParams.get("quickLoad") === "1";
+
   const tokenCustomerId =
     typeof sessionToken.sub === "string"
       ? toShopifyCustomerGid(sessionToken.sub)
@@ -717,6 +753,47 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   try {
+    // ── FAST PATH: quickLoad=1 — return stored metafields immediately ────────
+    // Fires DB read + fetchShopCountries in parallel. No QIVOS call at all.
+    // The extension calls this first so UI renders instantly, then calls again
+    // without quickLoad in the background to get fresh QIVOS data.
+    if (quickLoad) {
+      const [metafields, availableCountries] = await Promise.all([
+        getCustomerIdentityMetafields({ shop, customerId }),
+        fetchShopCountries(shop),
+      ]);
+
+      const redeemPoint = metafields.redeemPoint;
+      const canRedeem = metafields.canRedeem ?? false;
+
+      return cors(
+        new Response(
+          buildSuccessResponse({
+            shop,
+            customerId,
+            metafields,
+            availableCountries,
+            redeemPoint,
+            canRedeem,
+            qivosSyncApplied: false,
+            inactiveMemberships: [],
+            backfillApplied: false,
+            backfillRequired: false,
+            personDetailsMissing: false,
+            pointBalanceChanged: false,
+            canRedeemChanged: false,
+            sessionToken,
+            quickLoad: true,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    }
+
+    // ── FULL PATH: fetch metafields + fire countriesPromise early ────────────
+    // fetchShopCountries starts immediately — it runs in parallel with QIVOS.
+    const countriesPromise = fetchShopCountries(shop);
+
     let metafields = await getCustomerIdentityMetafields({ shop, customerId });
 
     const alreadyLinked =
@@ -741,13 +818,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     if (alreadyLinked && !allowQivosBackfill) {
       // Customer already linked — fetch ONLY balance/canRedeem from QIVOS.
-      // Phone-only search — email removed.
       const freshBalance = await fetchFreshLoyaltyBalanceFromQivos({
         phone: metafields.phone,
         countryCode: metafields.countryCode,
-      }).catch((err) => {
+      }).catch((err): {
+        pointBalance?: string;
+        canRedeem?: boolean;
+        inactiveMemberships: Array<{ personQCCode: string; loyaltyQCCode: string }>;
+      } => {
         console.warn("[QIVOS] fetchFreshLoyaltyBalance failed:", err);
-        return {};
+        return { inactiveMemberships: [] };
       });
 
       qivosSearchResult = {
@@ -776,8 +856,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       metafields = await getCustomerIdentityMetafields({ shop, customerId });
     }
 
+    // ── Await countriesPromise here — it has been running in parallel ────────
     const [availableCountries, loyaltyData] = await Promise.all([
-      fetchShopCountries(shop),
+      countriesPromise,
       Promise.resolve(
         qivosSearchResult.qivosSearchPerformed
           ? {
@@ -795,8 +876,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const freshCanRedeem =
       loyaltyData.canRedeem ?? metafields.canRedeem ?? false;
 
-    // Prefer freshPointBalance from QIVOS as source of truth;
-    // fall back to stored only if QIVOS returned nothing (e.g. network error).
     const redeemPoint = freshPointBalance ?? metafields.redeemPoint;
 
     const pointBalanceChanged =
@@ -830,8 +909,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       }
     }
 
-    const shopCountryCode = availableCountries[0]?.code;
-
     // Credit store balance only when:
     // 1. canRedeem is true
     // 2. We have a fresh point balance
@@ -857,35 +934,24 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     return cors(
       new Response(
-        JSON.stringify({
-          ok: true,
+        buildSuccessResponse({
           shop,
           customerId,
-          ...metafields,
+          metafields,
           availableCountries,
-          shopCountryCode,
-          pointBalance: redeemPoint,
           redeemPoint,
           canRedeem: freshCanRedeem,
           qivosSyncApplied,
-          qivosBackfillApplied: qivosSearchResult.backfillApplied,
-          qivosBackfillRequired: qivosSearchResult.backfillRequired,
-          qivosPersonDetailsMissing: qivosSearchResult.personDetailsMissing,
           inactiveMemberships: qivosSearchResult.inactiveMemberships,
-          needsActivation: qivosSearchResult.inactiveMemberships.length > 0,
-          debug: {
-            tokenSub: sessionToken.sub ?? null,
-            tokenDest: sessionToken.dest ?? null,
-            availableCountries,
-            shopCountryCode: shopCountryCode ?? null,
-            pointBalanceChanged,
-            canRedeemChanged,
-          },
+          backfillApplied: qivosSearchResult.backfillApplied,
+          backfillRequired: qivosSearchResult.backfillRequired,
+          personDetailsMissing: qivosSearchResult.personDetailsMissing,
+          pointBalanceChanged,
+          canRedeemChanged,
+          sessionToken,
+          quickLoad: false,
         }),
-        {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        },
+        { status: 200, headers: { "Content-Type": "application/json" } },
       ),
     );
   } catch (error) {
