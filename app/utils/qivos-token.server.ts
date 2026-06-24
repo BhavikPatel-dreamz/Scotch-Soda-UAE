@@ -178,12 +178,6 @@ async function refreshQIVOSTokenViaRefreshToken(refreshToken: string): Promise<{
       body: JSON.stringify({}),
     });
 
-    console.log("[QIVOS] Refresh response status:", response.status);
-    console.log(
-      "[QIVOS] Refresh response headers:",
-      Object.fromEntries(response.headers),
-    );
-
     const responseText = await response.text();
     console.log("[QIVOS] Refresh response body:", responseText);
 

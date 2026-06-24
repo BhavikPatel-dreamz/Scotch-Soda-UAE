@@ -19,8 +19,8 @@ export const loader = async () => {
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   if (request.method !== "POST") {
-    return Response.json<BackfillResponse>(
-      { success: false, error: "Method not allowed" },
+    return Response.json(
+      { success: false, error: "Method not allowed" } as BackfillResponse,
       { status: 405 },
     );
   }
@@ -70,10 +70,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
   }
 
-  return Response.json<BackfillResponse>({
+  return Response.json({
     success: true,
     processed: sessions.length,
     upserted: stores.length,
     stores,
-  });
+  } as BackfillResponse);
 };

@@ -4,9 +4,8 @@ import {
   type AdminGraphqlClient,
 } from "./shopify-admin.server";
 import {
-  extractQivosPayload,
-  isQivosLogicalFailure,
-  normalizeBooleanValue,
+  findFirstNestedValue,
+  normalizeBooleanValue
 } from "./qivos-utils.server";
 
 const DEFAULT_METAFIELD_NAMESPACE = "custom";
@@ -140,41 +139,41 @@ function extractFirstFromArrayField(
   return undefined;
 }
 
-function findFirstNestedValue(
-  value: unknown,
-  candidateKeys: string[],
-): string | undefined {
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const nested = findFirstNestedValue(item, candidateKeys);
-      if (nested) {
-        return nested;
-      }
-    }
-    return undefined;
-  }
+// function findFirstNestedValue(
+//   value: unknown,
+//   candidateKeys: string[],
+// ): string | undefined {
+//   if (Array.isArray(value)) {
+//     for (const item of value) {
+//       const nested = findFirstNestedValue(item, candidateKeys);
+//       if (nested) {
+//         return nested;
+//       }
+//     }
+//     return undefined;
+//   }
 
-  const record = extractObjectRecord(value);
-  if (!record) {
-    return undefined;
-  }
+//   const record = extractObjectRecord(value);
+//   if (!record) {
+//     return undefined;
+//   }
 
-  for (const key of candidateKeys) {
-    const directValue = extractStringValue(record[key]);
-    if (directValue) {
-      return directValue;
-    }
-  }
+//   for (const key of candidateKeys) {
+//     const directValue = extractStringValue(record[key]);
+//     if (directValue) {
+//       return directValue;
+//     }
+//   }
 
-  for (const nestedValue of Object.values(record)) {
-    const nested = findFirstNestedValue(nestedValue, candidateKeys);
-    if (nested) {
-      return nested;
-    }
-  }
+//   for (const nestedValue of Object.values(record)) {
+//     const nested = findFirstNestedValue(nestedValue, candidateKeys);
+//     if (nested) {
+//       return nested;
+//     }
+//   }
 
-  return undefined;
-}
+//   return undefined;
+// }
 
 async function ensureMetafieldDefinitions(
   adminClient: AdminGraphqlClient,

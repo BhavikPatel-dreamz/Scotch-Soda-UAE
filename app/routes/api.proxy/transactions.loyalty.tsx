@@ -6,6 +6,8 @@ import {
 } from "../../utils/qivos-token.server";
 import { CORS_HEADERS } from "../../utils/cors.server";
 import { QIVOS_BESIDE_API_BASE_URL } from "../../utils/constants";
+import { parseResponseBody } from "app/utils/qivos-utils.server";
+import { sendQivosRequestWithRetry } from "app/utils/qivos-person-backfill.server";
 
 const QIVOS_TRANSACTIONS_LOYALTY_URL = `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/transactions/loyalty`;
 
@@ -24,45 +26,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
 };
 
-async function sendQivosRequestWithRetry(
-  url: string,
-  init: RequestInit,
-  token: string,
-): Promise<Response> {
-  async function execute(requestToken: string) {
-    const headers = new Headers(init.headers);
-    headers.set("Accept", "application/json");
-    headers.set("x-jwt-token", requestToken);
-
-    if (init.body !== undefined && init.body !== null && init.body !== "") {
-      headers.set("Content-Type", "application/json");
-    }
-
-    return fetch(url, {
-      ...init,
-      headers,
-    });
-  }
-
-  let response = await execute(token);
-
-  if (response.status === 401) {
-    const refreshedToken = await refreshQIVOSToken();
-    response = await execute(refreshedToken);
-  }
-
-  return response;
-}
-
-async function parseResponseBody(response: Response): Promise<unknown> {
-  const text = await response.text();
-
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text ? { raw: text } : null;
-  }
-}
 
 export const action = async ({ request }: ActionFunctionArgs) => {
 

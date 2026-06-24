@@ -16,7 +16,6 @@ export default [
   ),
   route("app", "routes/app.tsx", [
     index("routes/app._index.tsx"),
-    route("additional", "routes/app.additional.tsx"),
   ]),
 
   // Webhook routes

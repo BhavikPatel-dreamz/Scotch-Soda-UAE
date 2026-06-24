@@ -7,6 +7,7 @@ import { CORS_HEADERS } from "../../utils/cors.server";
 import { QIVOS_BESIDE_API_BASE_URL } from "../../utils/constants";
 import {
   backfillMissingQivosPersonDetails,
+  extractPersonQCCode,
   fetchShopifyCustomerProfile,
 } from "../../utils/qivos-person-backfill.server";
 import {
@@ -14,11 +15,15 @@ import {
   extractObjectRecord,
   findFirstNestedValue,
   normalizeBooleanValue,
+  phonesMatch,
+  emailsMatch,
+  buildPhoneSearchVariants,
 } from "../../utils/qivos-utils.server";
 import {
   syncCustomerMetafields,
   saveCustomerIdentityMetafields,
 } from "../../utils/shopify-customer-metafields.server";
+import { collectInactiveLoyaltyMemberships, extractLoyaltyQCCode, normalizeInactiveValue } from "../customer-account.metafields";
 
 const QIVOS_PERSONS_SEARCH_URL =
   `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/persons/search`;
@@ -373,37 +378,6 @@ function extractIdentifierFromRequest(
   return undefined;
 }
 
-// ─── Phone utils ──────────────────────────────────────────────────────────────
-
-function normalizePhone(phone: string): string {
-  return phone.replace(/\D/g, "").slice(-10);
-}
-
-function phonesMatch(
-  firstPhone: string,
-  secondPhone: string | null | undefined,
-): boolean {
-  if (!secondPhone) return false;
-  const a = normalizePhone(firstPhone);
-  const b = normalizePhone(secondPhone);
-  return Boolean(a) && a === b;
-}
-
-function buildPhoneSearchVariants(phone: string): string[] {
-  const trimmed = phone.trim();
-  const digits = trimmed.replace(/\D/g, "");
-  const last10 = digits.slice(-10);
-
-  const variants = [
-    trimmed,
-    digits,
-    last10,
-    trimmed.startsWith("+") ? undefined : `+${digits}`,
-    last10 ? `+91${last10}` : undefined,
-  ].filter((v): v is string => Boolean(v));
-
-  return [...new Set(variants)];
-}
 
 // ─── QIVOS response parsers ───────────────────────────────────────────────────
 
@@ -497,60 +471,41 @@ function extractEmailFromQivosPerson(
   );
 }
 
-function normalizeInactiveValue(value: unknown): boolean {
-  if (typeof value === "boolean") return value === false;
-  if (typeof value === "string") {
-    return value.trim().toLowerCase() === "false";
-  }
-  if (value && typeof value === "object" && "value" in value) {
-    return normalizeInactiveValue((value as { value?: unknown }).value);
-  }
-  return false;
-}
+// function extractLoyaltyQCCode(value: unknown): string | undefined {
+//   const record = extractObjectRecord(value);
+//   if (!record) return undefined;
 
-function extractPersonQCCode(person: Record<string, unknown>): string | undefined {
-  return (
-    extractStringValue(person.QCCode) ??
-    extractStringValue(person.qcCode) ??
-    extractStringValue(person.personQCCode)
-  );
-}
+//   return (
+//     extractStringValue(record.QCCode) ??
+//     extractStringValue(record.qcCode) ??
+//     extractStringValue(record.loyaltyQCCode) ??
+//     extractStringValue(record.loyaltyCode) ??
+//     extractStringValue(record.membershipQCCode) ??
+//     extractStringValue(record.membershipCode) ??
+//     extractStringValue(record.code)
+//   );
+// }
 
-function extractLoyaltyQCCode(value: unknown): string | undefined {
-  const record = extractObjectRecord(value);
-  if (!record) return undefined;
+// function collectInactiveLoyaltyMemberships(
+//   person: Record<string, unknown>,
+// ): Array<{ personQCCode: string; loyaltyQCCode: string }> {
+//   const personQCCode = extractPersonQCCode(person);
+//   if (!personQCCode) return [];
 
-  return (
-    extractStringValue(record.QCCode) ??
-    extractStringValue(record.qcCode) ??
-    extractStringValue(record.loyaltyQCCode) ??
-    extractStringValue(record.loyaltyCode) ??
-    extractStringValue(record.membershipQCCode) ??
-    extractStringValue(record.membershipCode) ??
-    extractStringValue(record.code)
-  );
-}
+//   const memberships = Array.isArray(person.loyaltyMembershipData)
+//     ? person.loyaltyMembershipData
+//     : [];
 
-function collectInactiveLoyaltyMemberships(
-  person: Record<string, unknown>,
-): Array<{ personQCCode: string; loyaltyQCCode: string }> {
-  const personQCCode = extractPersonQCCode(person);
-  if (!personQCCode) return [];
+//   return memberships.flatMap((membership) => {
+//     const record = extractObjectRecord(membership);
+//     if (!record || !normalizeInactiveValue(record.active)) return [];
 
-  const memberships = Array.isArray(person.loyaltyMembershipData)
-    ? person.loyaltyMembershipData
-    : [];
+//     const loyaltyQCCode = extractLoyaltyQCCode(record);
+//     if (!loyaltyQCCode) return [];
 
-  return memberships.flatMap((membership) => {
-    const record = extractObjectRecord(membership);
-    if (!record || !normalizeInactiveValue(record.active)) return [];
-
-    const loyaltyQCCode = extractLoyaltyQCCode(record);
-    if (!loyaltyQCCode) return [];
-
-    return [{ personQCCode, loyaltyQCCode }];
-  });
-}
+//     return [{ personQCCode, loyaltyQCCode }];
+//   });
+// }
 
 function extractPointBalanceFromQivosPerson(
   person: Record<string, unknown>,
@@ -876,13 +831,6 @@ function buildMatchResponse(params: {
   };
 }
 
-function emailsMatch(
-  a: string,
-  b: string | null | undefined,
-): boolean {
-  if (!b) return false;
-  return a.toLowerCase().trim() === b.toLowerCase().trim();
-}
 
 // ─── Action ───────────────────────────────────────────────────────────────────
 

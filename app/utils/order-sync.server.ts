@@ -7,6 +7,8 @@ import {
 } from "./shopify-customer-metafields.server";
 import { getQIVOSToken, refreshQIVOSToken } from "./qivos-token.server";
 import { toShopifyCustomerGid } from "./store.server";
+import { parseResponseBody } from "./qivos-utils.server";
+import { sendQivosRequestWithRetry } from "./qivos-person-backfill.server";
 
 type ShopifyOrderPayload = Record<string, unknown>;
 
@@ -214,45 +216,6 @@ export function isOrderWebhookTopic(topic: string, expected: string): boolean {
   return normalizeWebhookTopic(topic) === expected;
 }
 
-async function parseResponseBody(response: Response): Promise<unknown> {
-  const text = await response.text();
-
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text ? { raw: text } : null;
-  }
-}
-
-async function sendQivosRequestWithRetry(
-  url: string,
-  init: RequestInit,
-  token: string,
-): Promise<Response> {
-  async function execute(requestToken: string) {
-    const headers = new Headers(init.headers);
-    headers.set("Accept", "application/json");
-    headers.set("x-jwt-token", requestToken);
-
-    if (init.body !== undefined && init.body !== null && init.body !== "") {
-      headers.set("Content-Type", "application/json");
-    }
-
-    return fetch(url, {
-      ...init,
-      headers,
-    });
-  }
-
-  let response = await execute(token);
-
-  if (response.status === 401) {
-    const refreshedToken = await refreshQIVOSToken();
-    response = await execute(refreshedToken);
-  }
-
-  return response;
-}
 
 async function reserveQivosPoints({
   loyaltyMemberCode,
@@ -465,4 +428,19 @@ export async function upsertShopifyOrderFromWebhook({
   }
 
   return order;
+}
+ 
+export function toPositiveNumber(value: number | string | undefined): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return null;
 }

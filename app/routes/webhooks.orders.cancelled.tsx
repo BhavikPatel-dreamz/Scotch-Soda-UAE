@@ -1,8 +1,7 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import {
-  isOrderWebhookTopic,
-  upsertShopifyOrderFromWebhook,
+  isOrderWebhookTopic
 } from "../utils/order-sync.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -11,15 +10,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const { topic, shop, payload } = await authenticate.webhook(request);
 
     if (isOrderWebhookTopic(topic, "ORDERS_CANCELLED")) {
-      const order = await upsertShopifyOrderFromWebhook({
-        shop,
-        topic,
-        payload: payload as Record<string, unknown>,
-      });
-
-      console.log(
-        `Stored cancelled order ${order.shopifyOrderId} for shop ${shop}`,
-      );
+      console.log("[orders/cancelled] authenticated webhook for shop:", shop);
     }
 
     return new Response("OK", { status: 200 });

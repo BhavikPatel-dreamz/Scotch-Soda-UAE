@@ -20,6 +20,7 @@ import { getQIVOSToken } from "../utils/qivos-token.server";
 import { QIVOS_BESIDE_API_BASE_URL } from "../utils/constants";
 import {
   backfillMissingQivosPersonDetails,
+  extractPersonQCCode,
   fetchShopifyCustomerProfile,
   qivosPersonNeedsShopifyProfileBackfill,
 } from "../utils/qivos-person-backfill.server";
@@ -240,7 +241,7 @@ function qivosSearchHasResults(responseData: unknown): boolean {
   return Array.isArray(payload?.data) && payload.data.length > 0;
 }
 
-function normalizeInactiveValue(value: unknown): boolean {
+export function normalizeInactiveValue(value: unknown): boolean {
   if (typeof value === "boolean") return value === false;
   if (typeof value === "string") return value.trim().toLowerCase() === "false";
   if (value && typeof value === "object" && "value" in value) {
@@ -249,17 +250,8 @@ function normalizeInactiveValue(value: unknown): boolean {
   return false;
 }
 
-function extractPersonQCCode(
-  person: Record<string, unknown>,
-): string | undefined {
-  return (
-    extractStringValue(person.QCCode) ??
-    extractStringValue(person.qcCode) ??
-    extractStringValue(person.personQCCode)
-  );
-}
 
-function extractLoyaltyQCCode(value: unknown): string | undefined {
+export function extractLoyaltyQCCode(value: unknown): string | undefined {
   const record = extractObjectRecord(value);
   if (!record) return undefined;
 
@@ -274,7 +266,7 @@ function extractLoyaltyQCCode(value: unknown): string | undefined {
   );
 }
 
-function extractQivosPersons(
+ function extractQivosPersons(
   responseData: unknown,
 ): Record<string, unknown>[] {
   const root = extractObjectRecord(responseData);
@@ -300,7 +292,7 @@ function extractQivosPersons(
   return root ? [root] : [];
 }
 
-function collectInactiveLoyaltyMemberships(
+export function collectInactiveLoyaltyMemberships(
   person: Record<string, unknown>,
 ): Array<{ personQCCode: string; loyaltyQCCode: string }> {
   const personQCCode = extractPersonQCCode(person);
@@ -321,11 +313,6 @@ function collectInactiveLoyaltyMemberships(
   });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Lightweight QIVOS fetch — point balance + canRedeem + inactive memberships.
-// Used when customer is already linked to avoid unnecessary metafield writes.
-// Phone-only search — email search disabled.
-// ─────────────────────────────────────────────────────────────────────────────
 async function fetchFreshLoyaltyBalanceFromQivos(params: {
   phone?: string;
   countryCode?: string;

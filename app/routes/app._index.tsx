@@ -62,8 +62,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   );
   const responseJson = await response.json();
 
-  const product = responseJson.data!.productCreate!.product!;
-  const variantId = product.variants.edges[0]!.node!.id!;
+  const product = responseJson.data?.productCreate?.product;
+  if (!product?.variants?.edges?.[0]?.node?.id) {
+    return Response.json({ error: "Failed to create product or no variants" });
+  }
+  const variantId = product.variants.edges[0]!.node!.id;
 
   const variantResponse = await admin.graphql(
     `#graphql
@@ -130,11 +133,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const metaobjectResponseJson = await metaobjectResponse.json();
 
   return {
-    product: responseJson!.data!.productCreate!.product,
-    variant:
-      variantResponseJson!.data!.productVariantsBulkUpdate!.productVariants,
-    metaobject:
-      metaobjectResponseJson!.data!.metaobjectUpsert!.metaobject,
+    product: responseJson.data?.productCreate?.product ?? null,
+    variant: variantResponseJson.data?.productVariantsBulkUpdate?.productVariants ?? null,
+    metaobject: metaobjectResponseJson.data?.metaobjectUpsert?.metaobject ?? null,
   };
 };
 
@@ -170,7 +171,6 @@ export default function Index() {
             App Bridge
           </s-link>{" "}
           interface examples like an{" "}
-          <s-link href="/app/additional">additional page in the app nav</s-link>
           , as well as an{" "}
           <s-link
             href="https://shopify.dev/docs/api/admin-graphql"

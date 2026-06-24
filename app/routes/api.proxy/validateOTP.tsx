@@ -50,7 +50,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const countryCode =
     (typeof body.countryCode === "string" ? body.countryCode : undefined) ??
     url.searchParams.get("countryCode") ??
-    "in";
+    "ae";
   const schemaCode =
     (typeof body.schemaCode === "string" ? body.schemaCode : undefined) ??
     url.searchParams.get("schemaCode") ??

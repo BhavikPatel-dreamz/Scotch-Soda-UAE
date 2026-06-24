@@ -1,10 +1,6 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { authenticateApiProxyRequest } from "../../utils/api-proxy-auth.server";
 import {
-  getQIVOSToken,
-  refreshQIVOSToken,
-} from "../../utils/qivos-token.server";
-import {
   syncCustomerMetafields,
   type CustomerMetafieldSyncResult,
   type CustomerSyncBody,
@@ -19,6 +15,8 @@ import {
   normalizeBooleanValue,
   extractQivosPayload,
   isQivosLogicalFailure,
+  parseResponseBody,
+  sendQivosRequest,
 } from "../../utils/qivos-utils.server";
 
 const QIVOS_PERSON_DETAILS_BASE_URL =
@@ -133,53 +131,6 @@ function jsonResponse(
   });
 }
 
-async function sendQivosRequest(
-  url: string,
-  init: RequestInit,
-): Promise<Response> {
-  const hasBody =
-    init.body !== undefined && init.body !== null && init.body !== "";
-
-  async function execute(token: string) {
-    const headers = new Headers(init.headers);
-    headers.set("Accept", "application/json");
-    if (hasBody) {
-      headers.set("Content-Type", "application/json");
-    }
-    headers.set("x-jwt-token", token);
-
-    return fetch(url, {
-      ...init,
-      headers,
-    });
-  }
-
-  const token = await getQIVOSToken();
-  // FIX 1: Was `Sending request to ${token}` — now correctly logs the URL.
-  console.log(
-    `Sending request to ${url} with method: ${init.method ?? "GET"}, hasBody: ${hasBody}`,
-  );
-  let response = await execute(token);
-
-  if (response.status === 401) {
-    console.warn(
-      "QIVOS request returned 401 with cached token; refreshing and retrying once.",
-    );
-    const refreshedToken = await refreshQIVOSToken();
-    response = await execute(refreshedToken);
-  }
-
-  return response;
-}
-
-async function parseResponseBody(response: Response): Promise<unknown> {
-  const text = await response.text();
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text ? { raw: text } : null;
-  }
-}
 
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {

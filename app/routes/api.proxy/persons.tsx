@@ -19,9 +19,10 @@ import { QIVOS_BESIDE_API_BASE_URL } from "../../utils/constants";
 import {
   isQivosLogicalFailure,
   extractStringValue,
-  extractObjectRecord,
   findFirstNestedValue,
+  parseResponseBody,
 } from "../../utils/qivos-utils.server";
+import { sendQivosRequestWithRetry } from "app/utils/qivos-person-backfill.server";
 
 const QIVOS_PERSONS_URL = `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/persons`;
 const QIVOS_PERSON_DETAILS_BASE_URL =
@@ -67,45 +68,6 @@ function buildQivosRequestBody(body: PersonCreateBody) {
   return qivosBody;
 }
 
-async function parseResponseBody(response: Response): Promise<unknown> {
-  const text = await response.text();
-
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text ? { raw: text } : null;
-  }
-}
-
-async function sendQivosRequestWithRetry(
-  url: string,
-  init: RequestInit,
-  token: string,
-): Promise<Response> {
-  async function execute(requestToken: string) {
-    const headers = new Headers(init.headers);
-    headers.set("Accept", "application/json");
-    headers.set("x-jwt-token", requestToken);
-
-    if (init.body !== undefined && init.body !== null && init.body !== "") {
-      headers.set("Content-Type", "application/json");
-    }
-
-    return fetch(url, {
-      ...init,
-      headers,
-    });
-  }
-
-  let response = await execute(token);
-
-  if (response.status === 401) {
-    const refreshedToken = await refreshQIVOSToken();
-    response = await execute(refreshedToken);
-  }
-
-  return response;
-}
 
 export const action = async ({ request }: ActionFunctionArgs) => {
 
@@ -190,15 +152,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   const qivosBody = buildQivosRequestBody(requestBody);
-  console.log("[persons.create] Forwarding payload to QIVOS", {
-    hasTelephoneList: Array.isArray(qivosBody.telephoneList),
-    hasEmailList: Array.isArray(qivosBody.emailList),
-    hasLoyaltyMembershipData: Array.isArray(qivosBody.loyaltyMembershipData),
-    hasConsentList: Array.isArray(qivosBody.consentList),
-    customerId: requestBody.customerId,
-    shop: requestBody.shop,
-    payload: JSON.stringify(qivosBody), // Log full payload for debugging
-  });
+ 
 
   const thirdPartyResponse = await sendQivosRequestWithRetry(
     QIVOS_PERSONS_URL,

@@ -10,6 +10,7 @@ import {
   resolveCurrentShop,
   toShopifyCustomerGid,
 } from "../../utils/store.server";
+import { toPositiveNumber } from "app/utils/order-sync.server";
 
 type CustomerCreditBody = {
   shop?: string;
@@ -33,20 +34,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   });
 };
 
-function toPositiveNumber(value: number | string | undefined): number | null {
-  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-    return value;
-  }
-
-  if (typeof value === "string") {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-
-  return null;
-}
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   // const corsHeaders = getCorsHeaders(request.headers.get("Origin"), "POST, OPTIONS");

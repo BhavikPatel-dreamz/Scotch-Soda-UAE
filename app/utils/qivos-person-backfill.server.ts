@@ -14,7 +14,7 @@ export type ShopifyCustomerProfile = {
 
 export type QivosPersonRecord = Record<string, unknown>;
 
-function extractPersonQCCode(person: QivosPersonRecord): string | undefined {
+export function extractPersonQCCode(person: QivosPersonRecord): string | undefined {
   return (
     extractStringValue(person.QCCode) ??
     extractStringValue(person.qcCode) ??
@@ -86,7 +86,7 @@ function buildEmailPatchPayload(emailAddress: string): Record<string, unknown> {
   };
 }
 
-async function sendQivosRequestWithRetry(
+export async function sendQivosRequestWithRetry(
   url: string,
   init: RequestInit,
   token: string,

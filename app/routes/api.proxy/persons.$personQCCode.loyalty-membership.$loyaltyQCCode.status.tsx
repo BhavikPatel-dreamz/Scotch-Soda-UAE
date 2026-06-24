@@ -18,6 +18,7 @@ import {
 } from "../../utils/shopify-customer-metafields.server";
 import {  CORS_HEADERS  } from "../../utils/cors.server";
 import { QIVOS_BESIDE_API_BASE_URL } from "../../utils/constants";
+import { normalizeActiveValue } from "app/utils/qivos-utils.server";
 
 type LoyaltyMembershipStatusBody = {
   customerId?: string;
@@ -27,30 +28,6 @@ type LoyaltyMembershipStatusBody = {
   shop?: string;
   [key: string]: unknown;
 };
-
-function normalizeActiveValue(value: unknown): boolean | null {
-  if (typeof value === "boolean") {
-    return value;
-  }
-
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === "true") {
-      return true;
-    }
-
-    if (normalized === "false") {
-      return false;
-    }
-  }
-
-  if (value && typeof value === "object" && "value" in value) {
-    const nestedValue = (value as { value?: unknown }).value;
-    return normalizeActiveValue(nestedValue);
-  }
-
-  return null;
-}
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
 
