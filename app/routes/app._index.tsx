@@ -7,6 +7,7 @@ import type {
 import { useFetcher } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
+import { ensureMetafieldDefinitions } from "../utils/shopify-customer-metafields.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -17,6 +18,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { admin } = await authenticate.admin(request);
+
+  // Ensure customer metafield definitions exist for this shop before creating demo data
+  try {
+    await ensureMetafieldDefinitions(admin, "custom");
+    console.log("Metafield definitions ensured for shop");
+  } catch (err) {
+    console.warn("Failed to ensure metafield definitions:", err);
+  }
   const color = ["Red", "Orange", "Yellow", "Green"][
     Math.floor(Math.random() * 4)
   ];

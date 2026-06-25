@@ -8,18 +8,35 @@ import {
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import prisma from "./db.server";
 
+const shopifyApiKey = process.env.SHOPIFY_API_KEY;
+const shopifyApiSecret = process.env.SHOPIFY_API_SECRET;
+const shopifyAppUrl = process.env.SHOPIFY_APP_URL;
+
+if (!shopifyApiKey) {
+  throw new Error("Missing SHOPIFY_API_KEY environment variable.");
+}
+if (!shopifyApiSecret) {
+  throw new Error("Missing SHOPIFY_API_SECRET environment variable.");
+}
+if (!shopifyAppUrl) {
+  throw new Error("Missing SHOPIFY_APP_URL environment variable.");
+}
+
 const shopify = shopifyApp({
-  apiKey: process.env.SHOPIFY_API_KEY,
-  apiSecretKey: process.env.SHOPIFY_API_SECRET || "",
+  apiKey: shopifyApiKey,
+  apiSecretKey: shopifyApiSecret,
   apiVersion: ApiVersion.October25,
   scopes: process.env.SCOPES?.split(","),
-  appUrl: process.env.SHOPIFY_APP_URL || "",
+  appUrl: shopifyAppUrl,
   authPathPrefix: "/auth",
   sessionStorage: new PrismaSessionStorage(prisma),
   distribution: AppDistribution.AppStore,
   hooks: {
     afterAuth: async ({ session, admin }) => {
-      console.log("[SHOPIFY] Authentication successful for shop:", session.shop);
+      console.log(
+        "[SHOPIFY] Authentication successful for shop:",
+        session.shop,
+      );
       let shopName: string | null = null;
       let contactEmail: string | null = null;
 
@@ -47,7 +64,10 @@ const shopify = shopifyApp({
         shopName = result.data?.shop?.name ?? null;
         contactEmail = result.data?.shop?.contactEmail ?? null;
       } catch (error) {
-        console.error("[SHOPIFY] Failed to fetch shop details after auth:", error);
+        console.error(
+          "[SHOPIFY] Failed to fetch shop details after auth:",
+          error,
+        );
       }
 
       await prisma.store.upsert({
@@ -72,7 +92,7 @@ const shopify = shopifyApp({
   future: {
     expiringOfflineAccessTokens: true,
   },
-    // Register webhook endpoints
+  // Register webhook endpoints
   webhooks: {
     ORDERS_CREATE: {
       deliveryMethod: DeliveryMethod.Http,

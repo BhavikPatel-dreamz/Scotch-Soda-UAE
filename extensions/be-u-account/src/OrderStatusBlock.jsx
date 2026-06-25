@@ -54,7 +54,6 @@
  * @property {boolean} needsPatch
  * @property {InactiveMembership[]} inactiveMemberships
  * @property {CountryOption[]} countryOptions
- * @property {boolean} convertingToCredit
  */
 
 /**
@@ -134,69 +133,68 @@ const CUSTOMER_SEARCH_ENDPOINT = `${APP_URL}/api/proxy/persons/search`;
 const SEND_OTP_ENDPOINT = `${APP_URL}/api/proxy/sendOTP`;
 const VALIDATE_OTP_ENDPOINT = `${APP_URL}/api/proxy/validateOTP`;
 const PERSONS_ENDPOINT = `${APP_URL}/api/proxy/persons`;
-const CUSTOMER_CREDIT_ENDPOINT = `${APP_URL}/api/proxy/customerCredit`;
 const RESEND_OTP_DELAY_SECONDS = 30;
 
 /** @type {CountryOption[]} */
 const COUNTRY_OPTIONS = [
-{
-  code: "AE",
-  apiCode: "ae",
-  dialCode: "+971",
-  name: "United Arab Emirates",
-  registrationStoreCode: "ECAE-D",
-  registrationCountryCode: "ae",
-  phonePlaceholder: "50 123 4567",
-  maxDigits: 9,  // ✅ 9 digits: 5 + 8 digits
-  validate: (digits) => /^5[0-9]\d{7}$/.test(digits),  // ✅ 50-58 prefix
-  errorMessage: "Enter a valid UAE mobile number starting with 5 (e.g. 501234567).",
-},
   {
-    code: "SA",
-    apiCode: "sa",
-    dialCode: "+966",
-    name: "Saudi Arabia",
+    code: "AE",
+    apiCode: "ae",
+    dialCode: "+971",
+    name: "United Arab Emirates",
     registrationStoreCode: "ECAE-D",
     registrationCountryCode: "ae",
     phonePlaceholder: "50 123 4567",
-    maxDigits: 9,
-    validate: (/** @type {string} */ digits) => /^5\d{8}$/.test(digits),
-    errorMessage: "Enter a valid Saudi mobile number starting with 5.",
+    maxDigits: 9,  // ✅ 9 digits: 5 + 8 digits
+    validate: (digits) => /^5[0-9]\d{7}$/.test(digits),  // ✅ 50-58 prefix
+    errorMessage: "Enter a valid UAE mobile number starting with 5 (e.g. 501234567).",
   },
-  {
-    code: "CA",
-    apiCode: "ca",
-    dialCode: "+1",
-    name: "Canada",
-    registrationStoreCode: "ECAE-D",
-    registrationCountryCode: "ae",
-    phonePlaceholder: "604 123 4567",
-    maxDigits: 10,
-    validate: (/** @type {string} */ digits) => /^[2-9]\d{9}$/.test(digits),
-    errorMessage: "Enter a valid 10 digit Canadian mobile number.",
-  },
-  {
-    code: "IN",
-    apiCode: "in",
-    dialCode: "+91",
-    name: "India",
-    registrationStoreCode: "ECAE-D",
-    registrationCountryCode: "ae",
-    phonePlaceholder: "98765 43210",
-    maxDigits: 10,
-    validate: (/** @type {string} */ digits) => /^[6-9]\d{9}$/.test(digits),
-    errorMessage: "Enter a valid 10 digit Indian mobile number.",
-  },
+  // {
+  //   code: "SA",
+  //   apiCode: "sa",
+  //   dialCode: "+966",
+  //   name: "Saudi Arabia",
+  //   registrationStoreCode: "ECAE-D",
+  //   registrationCountryCode: "ae",
+  //   phonePlaceholder: "50 123 4567",
+  //   maxDigits: 9,
+  //   validate: (/** @type {string} */ digits) => /^5\d{8}$/.test(digits),
+  //   errorMessage: "Enter a valid Saudi mobile number starting with 5.",
+  // },
+  // {
+  //   code: "CA",
+  //   apiCode: "ca",
+  //   dialCode: "+1",
+  //   name: "Canada",
+  //   registrationStoreCode: "ECAE-D",
+  //   registrationCountryCode: "ae",
+  //   phonePlaceholder: "604 123 4567",
+  //   maxDigits: 10,
+  //   validate: (/** @type {string} */ digits) => /^[2-9]\d{9}$/.test(digits),
+  //   errorMessage: "Enter a valid 10 digit Canadian mobile number.",
+  // },
+  // {
+  //   code: "IN",
+  //   apiCode: "in",
+  //   dialCode: "+91",
+  //   name: "India",
+  //   registrationStoreCode: "ECAE-D",
+  //   registrationCountryCode: "ae",
+  //   phonePlaceholder: "98765 43210",
+  //   maxDigits: 10,
+  //   validate: (/** @type {string} */ digits) => /^[6-9]\d{9}$/.test(digits),
+  //   errorMessage: "Enter a valid 10 digit Indian mobile number.",
+  // },
 ];
 
 /**
  * @param {string=} customerId
  * @returns {ExtensionState}
  */
-function createInitialState(customerId) {
+function createInitialState(customerId, initialLoading = true) {
   // @ts-ignore
   return {
-    loading: true,
+    loading: initialLoading,
     screen: "phone",
     linked: false,
     shop: "",
@@ -251,47 +249,91 @@ function getCountryConfig(countryCode, countryOptions = COUNTRY_OPTIONS) {
 }
 
 /**
+ * Keep only the store's market countries when they exist.
+ * The static fallback list is used only when the backend returns nothing.
+ *
+ * @param {CountryOption[]=} marketCountries
  * @param {string=} shopCountryCode
  * @param {CountryOption[]=} defaultOptions
  * @returns {CountryOption[]}
  */
-function buildCountryOptions(
+function mergeCountryOptions(
+  marketCountries,
   shopCountryCode,
   defaultOptions = COUNTRY_OPTIONS,
 ) {
-  const normalized = String(shopCountryCode ?? "")
+  const normalizedShopCode = String(shopCountryCode ?? "")
     .trim()
     .toUpperCase();
-  if (!normalized) return defaultOptions;
+  const marketList = Array.isArray(marketCountries) ? marketCountries : [];
+  if (!marketList.length) return defaultOptions;
 
-  const options = [...defaultOptions];
-  const existingIndex = options.findIndex(
-    (country) => country.code === normalized,
-  );
+  /** @type {CountryOption[]} */
+  const merged = [];
+  const seen = new Set();
 
-  if (existingIndex === -1) {
-    options.unshift({
-      code: normalized,
-      apiCode: normalized.toLowerCase(),
-      dialCode: "",
-      name: normalized,
-      registrationStoreCode: "",
-      registrationCountryCode: normalized.toLowerCase(),
-      phonePlaceholder: "",
-      maxDigits: 10,
-      validate: (/** @type {string} */ _digits) => true,
-      errorMessage: "",
+  const addCountry = (/** @type {{ code: any; apiCode: any; dialCode: any; name: any; registrationStoreCode: any; registrationCountryCode: any; phonePlaceholder: any; maxDigits: any; validate: any; errorMessage: any; }} */ country) => {
+    if (!country || !country.code) return;
+    const code = String(country.code).trim().toUpperCase();
+    if (!code || seen.has(code)) return;
+    seen.add(code);
+    merged.push({
+      ...country,
+      code,
+      apiCode: String(country.apiCode ?? code.toLowerCase()).toLowerCase(),
+      dialCode: String(country.dialCode ?? ""),
+      name: String(country.name ?? code),
+      registrationStoreCode: String(country.registrationStoreCode ?? ""),
+      registrationCountryCode: String(
+        country.registrationCountryCode ?? code.toLowerCase(),
+      ).toLowerCase(),
+      phonePlaceholder: String(country.phonePlaceholder ?? ""),
+      maxDigits:
+        typeof country.maxDigits === "number" && country.maxDigits > 0
+          ? country.maxDigits
+          : 10,
+      validate: typeof country.validate === "function" ? country.validate : () => true,
+      errorMessage: String(country.errorMessage ?? ""),
     });
-  } else if (existingIndex > 0) {
-    const [matched] = options.splice(existingIndex, 1);
-    options.unshift(matched);
+  };
+
+  if (normalizedShopCode) {
+    const shopCountry =
+      marketList.find((country) => country.code === normalizedShopCode) ??
+      defaultOptions.find((country) => country.code === normalizedShopCode);
+    if (shopCountry) {
+      addCountry(shopCountry);
+    } else {
+      addCountry({
+        code: normalizedShopCode,
+        apiCode: normalizedShopCode.toLowerCase(),
+        dialCode: "",
+        name: normalizedShopCode,
+        registrationStoreCode: "",
+        registrationCountryCode: normalizedShopCode.toLowerCase(),
+        phonePlaceholder: "",
+        maxDigits: 10,
+        validate: () => true,
+        errorMessage: "",
+      });
+    }
   }
 
-  return options;
+  for (const country of marketList) {
+    addCountry(country);
+  }
+
+  return merged.length ? merged : defaultOptions;
 }
 
 /**
  * @param {Array<Object>} raw
+ * @param {CountryOption[]=} defaultOptions
+ * @returns {CountryOption[]}
+ */
+/**
+ * @param {Array<Object>|undefined} raw
+ * @param {Array<Object>|undefined} raw
  * @param {CountryOption[]=} defaultOptions
  * @returns {CountryOption[]}
  */
@@ -322,10 +364,10 @@ function normalizeAvailableCountries(raw, defaultOptions = COUNTRY_OPTIONS) {
       const objectValue = value;
       return normalizeValue(
         objectValue.name ??
-          objectValue.label ??
-          objectValue.value ??
-          objectValue.code ??
-          "",
+        objectValue.label ??
+        objectValue.value ??
+        objectValue.code ??
+        "",
       );
     }
     return "";
@@ -378,14 +420,57 @@ function normalizeAvailableCountries(raw, defaultOptions = COUNTRY_OPTIONS) {
           // @ts-ignore
           typeof itemObj.maxDigits === "number" ? itemObj.maxDigits : 10,
         // @ts-ignore
-        validate: (_digits) => true,
+        validate: () => true,
         errorMessage: "",
       };
     })
     .filter(Boolean);
 
+  if (!options.length) return defaultOptions;
+
+  /** @type {CountryOption[]} */
+  const merged = [];
+  const seen = new Set();
+
+  const pushCountry = (/** @type {CountryOption} */ country) => {
+    if (!country || !country.code) return;
+    const code = String(country.code).trim().toUpperCase();
+    if (!code || seen.has(code)) return;
+    seen.add(code);
+    merged.push({
+      ...country,
+      code,
+      apiCode: String(country.apiCode ?? code.toLowerCase()).toLowerCase(),
+      dialCode: String(country.dialCode ?? ""),
+      name: String(country.name ?? code),
+      registrationStoreCode: String(country.registrationStoreCode ?? ""),
+      registrationCountryCode: String(
+        country.registrationCountryCode ?? code.toLowerCase(),
+      ).toLowerCase(),
+      phonePlaceholder: String(country.phonePlaceholder ?? ""),
+      maxDigits:
+        typeof country.maxDigits === "number" && country.maxDigits > 0
+          ? country.maxDigits
+          : 10,
+      validate:
+        typeof country.validate === "function"
+          ? country.validate
+          : () => true,
+      errorMessage: String(country.errorMessage ?? ""),
+    });
+  };
+
+  for (const country of options) {
+    if (!country) continue;
+    pushCountry(country);
+  }
+
+  for (const country of defaultOptions) {
+    pushCountry(country);
+  }
+
   // @ts-ignore
-  return options.length ? options : defaultOptions;
+  return merged.length ? merged : defaultOptions;
 }
 
 /**
@@ -542,7 +627,9 @@ function saveOtpSession(shop, phone, ttlSeconds) {
       expires: Date.now() + (ttlSeconds || RESEND_OTP_DELAY_SECONDS) * 1000,
     };
     sessionStorage.setItem(key, JSON.stringify(payload));
-  } catch (e) {}
+  } catch (e) {
+    void e;
+  }
 }
 
 /**
@@ -636,7 +723,7 @@ function Extension() {
   const currentCustomerId =
     globalThis.shopify?.authenticatedAccount?.customer?.value?.id ?? "";
   const [state, setState] = useState(() =>
-    createInitialState(currentCustomerId),
+    createInitialState(currentCustomerId, false),
   );
 
   /**
@@ -696,25 +783,16 @@ function Extension() {
     if (!response.ok || result.ok === false) {
       throw new Error(
         stringify(result.error) ||
-          `Failed to load customer metafields (${response.status})`,
+        `Failed to load customer metafields (${response.status})`,
       );
     }
 
-    const rawAvailableCountries =
-      Array.isArray(result.availableCountries) &&
-      result.availableCountries.length > 0
-        ? result.availableCountries
-        : Array.isArray(result.shopCountryCode) &&
-            result.shopCountryCode.length > 0
-          ? result.shopCountryCode
-          : null;
-    const availableCountries = rawAvailableCountries
-      ? normalizeAvailableCountries(rawAvailableCountries)
-      : buildCountryOptions(
-          typeof result.shopCountryCode === "string"
-            ? result.shopCountryCode
-            : undefined,
-        );
+    const availableCountries = mergeCountryOptions(
+      normalizeAvailableCountries(result.availableCountries),
+      typeof result.shopCountryCode === "string"
+        ? result.shopCountryCode
+        : undefined,
+    );
 
     const rawPhone = result.phone ?? "";
     const inferredCountryCode = inferCountryFromPhone(
@@ -797,52 +875,6 @@ function Extension() {
     };
   }
 
-  async function convertToCredit() {
-    const shopifyCustomerId =
-      globalThis.shopify?.authenticatedAccount?.customer?.value?.id ??
-      state.customerId ??
-      "";
-    const requestShop = await resolveShopForRequest(state.shop);
-    const points = parseInt(state.redeemPoint || state.pointBalance || "0", 10);
-
-    if (!points || points <= 0) return;
-
-    setState((prev) => ({
-      ...prev,
-      convertingToCredit: true,
-      errorMessage: "",
-      infoMessage: "",
-    }));
-
-    try {
-      await postJson(CUSTOMER_CREDIT_ENDPOINT, {
-        shop: requestShop,
-        customerId: shopifyCustomerId,
-        redeemPoints: points,
-      });
-
-      // Refresh metafields to get updated point balance
-      const refreshed = await fetchCustomerMetafields();
-
-      setState((prev) => ({
-        ...prev,
-        convertingToCredit: false,
-        infoMessage: `Successfully converted ${points} points to store credit!`,
-        pointBalance: refreshed.pointBalance ?? "",
-        redeemPoint: refreshed.pointBalance ?? "",
-        canRedeem: refreshed.canRedeem ?? prev.canRedeem,
-      }));
-    } catch (error) {
-      setState((prev) => ({
-        ...prev,
-        convertingToCredit: false,
-        errorMessage:
-          error instanceof Error
-            ? error.message
-            : "Failed to convert points to credit.",
-      }));
-    }
-  }
   /**
    * Save metafields to backend
    * @param {Partial<ExtensionState>=} updates
@@ -988,7 +1020,9 @@ function Extension() {
               sessionStorage.removeItem(
                 getOtpStorageKey(resolvedShop, resolvedPhone),
               );
-            } catch (e) {}
+            } catch (e) {
+              void e;
+            }
             setState((prev) => ({
               ...prev,
               loading: false,
@@ -1140,10 +1174,6 @@ function Extension() {
         countryCode: country.apiCode,
         customerId: shopifyCustomerId,
       });
-
-      // @ts-ignore
-      // @ts-ignore
-      const phoneCheck = checkResult.phoneCheck || {};
 
       // Determine if person exists and needs profile patching
       // @ts-ignore
@@ -1332,7 +1362,9 @@ function Extension() {
 
       try {
         sessionStorage.removeItem(getOtpStorageKey(requestShop, state.phone));
-      } catch (e) {}
+      } catch (e) {
+        void e;
+      }
 
       setState((prev) => ({
         ...prev,
@@ -1388,8 +1420,24 @@ function Extension() {
         return;
       }
 
-      if (refreshed.linked || state.isExistingPerson) {
-        // ✅ Save metafields after OTP verification
+      if (refreshed.linked) {
+        setState((prev) => ({
+          ...prev,
+          verifyingOtp: false,
+          linked: true,
+          screen: "success",
+          otpFlowCompleted: true,
+          loyaltySync: true,
+          infoMessage: refreshed.qivosBackfillApplied
+            ? "OTP verified successfully. Your Be U profile details were updated."
+            : "OTP verified successfully.",
+          errorMessage: "",
+        }));
+        return;
+      }
+
+      if (state.isExistingPerson) {
+        // ✅ Save metafields after OTP verification for existing customers who are not yet linked.
         await saveCustomerMetafields({
           personQCCode: refreshed.personQCCode,
           loyaltyQCCode: refreshed.loyaltyQCCode,
@@ -1448,11 +1496,11 @@ function Extension() {
         ? state.inactiveMemberships
         : state.personQCCode && state.loyaltyQCCode
           ? [
-              {
-                personQCCode: state.personQCCode,
-                loyaltyQCCode: state.loyaltyQCCode,
-              },
-            ]
+            {
+              personQCCode: state.personQCCode,
+              loyaltyQCCode: state.loyaltyQCCode,
+            },
+          ]
           : [];
 
     if (membershipsToActivate.length === 0) {
@@ -1642,10 +1690,10 @@ function Extension() {
               ) : null}
 
               {state.redeemPoint ||
-              state.pointBalance ||
-              state.tier ||
-              state.loyaltySync ||
-              state.canRedeem !== undefined ? (
+                state.pointBalance ||
+                state.tier ||
+                state.loyaltySync ||
+                state.canRedeem !== undefined ? (
                 <s-box
                   borderWidth="base"
                   borderRadius="base"
@@ -1669,23 +1717,6 @@ function Extension() {
                         </s-grid-item>
                       ) : null}
                     </s-grid>
-                    <s-button
-                      onClick={convertToCredit}
-                      disabled={
-                        state.convertingToCredit ||
-                        !state.canRedeem ||
-                        !(
-                          parseInt(
-                            state.redeemPoint || state.pointBalance || "0",
-                            10,
-                          ) > 0
-                        )
-                      }
-                    >
-                      {state.convertingToCredit
-                        ? "Converting..."
-                        : "Convert to Credit"}
-                    </s-button>
                   </s-stack>
                 </s-box>
               ) : null}
@@ -1723,7 +1754,7 @@ function Extension() {
     );
   }
 
-  const showCountrySelector = state.countryOptions.length > 1;
+  const showCountrySelector = state.countryOptions.length > 0;
   const showPhoneInput = !state.hasSavedPhone;
 
   return (
@@ -1841,67 +1872,67 @@ function Extension() {
 
             <s-stack direction="inline" gap="base">
               {
-// @ts-ignore
-              state.screen === "activation" ? (
-                <s-button
-                  onClick={activateInactiveMemberships}
-                  disabled={state.activatingAccount}
-                >
-                  {state.activatingAccount
-                    ? "Activating..."
-                    : "Activate my account"}
-                </s-button>
-              ) : state.screen === "otp" ? (
-                <>
+                // @ts-ignore
+                state.screen === "activation" ? (
                   <s-button
-                    onClick={verifyOtp}
-                    disabled={
-                      state.verifyingOtp ||
-                      state.creatingPerson ||
-                      state.activatingAccount
-                    }
+                    onClick={activateInactiveMemberships}
+                    disabled={state.activatingAccount}
                   >
-                    {state.verifyingOtp ||
-                    state.creatingPerson ||
-                    state.activatingAccount
-                      ? "Please wait..."
-                      : "Verify OTP"}
+                    {state.activatingAccount
+                      ? "Activating..."
+                      : "Activate my account"}
                   </s-button>
+                ) : state.screen === "otp" ? (
+                  <>
+                    <s-button
+                      onClick={verifyOtp}
+                      disabled={
+                        state.verifyingOtp ||
+                        state.creatingPerson ||
+                        state.activatingAccount
+                      }
+                    >
+                      {state.verifyingOtp ||
+                        state.creatingPerson ||
+                        state.activatingAccount
+                        ? "Please wait..."
+                        : "Verify OTP"}
+                    </s-button>
+                    <s-button
+                      onClick={sendOtp}
+                      disabled={
+                        state.sendingOtp ||
+                        state.verifyingOtp ||
+                        state.creatingPerson ||
+                        state.activatingAccount ||
+                        state.resendSecondsLeft > 0
+                      }
+                    >
+                      {state.resendSecondsLeft > 0
+                        ? `Resend OTP in ${formatSeconds(state.resendSecondsLeft)}`
+                        : "Resend OTP"}
+                    </s-button>
+                  </>
+                ) : (
                   <s-button
                     onClick={sendOtp}
                     disabled={
                       state.sendingOtp ||
-                      state.verifyingOtp ||
-                      state.creatingPerson ||
                       state.activatingAccount ||
-                      state.resendSecondsLeft > 0
+                      state.creatingPerson ||
+                      state.verifyingOtp
                     }
                   >
-                    {state.resendSecondsLeft > 0
-                      ? `Resend OTP in ${formatSeconds(state.resendSecondsLeft)}`
-                      : "Resend OTP"}
+                    {state.sendingOtp ||
+                      state.activatingAccount ||
+                      state.creatingPerson ||
+                      state.verifyingOtp
+                      ? "Please wait..."
+                      : state.needsActivation
+                        ? "Send activation code"
+                        : "Get verification code"}
                   </s-button>
-                </>
-              ) : (
-                <s-button
-                  onClick={sendOtp}
-                  disabled={
-                    state.sendingOtp ||
-                    state.activatingAccount ||
-                    state.creatingPerson ||
-                    state.verifyingOtp
-                  }
-                >
-                  {state.sendingOtp ||
-                  state.activatingAccount ||
-                  state.creatingPerson ||
-                  state.verifyingOtp
-                    ? "Please wait..."
-                    : state.needsActivation
-                      ? "Send activation code"
-                      : "Get verification code"}
-                </s-button>
-              )}
+                )}
             </s-stack>
           </s-stack>
         </s-box>

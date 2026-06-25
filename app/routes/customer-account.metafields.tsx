@@ -6,11 +6,6 @@ import {
   syncCustomerMetafields,
 } from "../utils/shopify-customer-metafields.server";
 import {
-  extractObjectRecord,
-  extractStringValue,
-  normalizeBooleanValue,
-} from "../utils/qivos-utils.server";
-import {
   normalizeShopDomain,
   toShopifyCustomerGid,
 } from "../utils/store.server";
@@ -25,6 +20,9 @@ import {
   qivosPersonNeedsShopifyProfileBackfill,
 } from "../utils/qivos-person-backfill.server";
 import { creditCustomerStoreCredit } from "app/utils/customer-credit.server";
+import {
+  collectInactiveLoyaltyMemberships,
+} from "../utils/customer-account-loyalty.server";
 
 const QIVOS_PERSONS_SEARCH_URL = `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/persons/search`;
 
@@ -75,6 +73,7 @@ async function fetchShopCountries(shop: string) {
               nodes {
                 __typename
                 ... on MarketRegionCountry {
+                  countryCode
                   name
                 }
               }
@@ -92,16 +91,18 @@ async function fetchShopCountries(shop: string) {
     const markets = (body?.data?.markets?.nodes ?? []) as MarketNode[];
     const countries = markets.flatMap((market) =>
       (market.regions?.nodes ?? [])
-        .map((country) => ({
-          code:
+        .map((country) => {
+          const code =
             typeof country.countryCode === "string"
-              ? country.countryCode
-              : undefined,
-          name: typeof country.name === "string" ? country.name : "",
-        }))
+              ? country.countryCode.trim().toUpperCase()
+              : "";
+          const name = typeof country.name === "string" ? country.name.trim() : "";
+
+          return code && name ? { code, name } : null;
+        })
         .filter(
           (country): country is { code: string; name: string } =>
-            Boolean(country.name && country.code),
+            Boolean(country),
         ),
     );
 
@@ -137,6 +138,45 @@ function extractPointBalanceFromPerson(person: unknown): string | undefined {
     }
   }
 
+  return undefined;
+}
+
+function extractObjectRecord(
+  value: unknown,
+): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function extractStringValue(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+
+  if (typeof value === "number") {
+    return String(value);
+  }
+
+  return undefined;
+}
+
+function normalizeBooleanValue(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "y"].includes(normalized)) return true;
+    if (["false", "0", "no", "n"].includes(normalized)) return false;
+  }
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+  }
+  if (value && typeof value === "object" && "value" in value) {
+    return normalizeBooleanValue((value as { value?: unknown }).value);
+  }
   return undefined;
 }
 
@@ -241,32 +281,7 @@ function qivosSearchHasResults(responseData: unknown): boolean {
   return Array.isArray(payload?.data) && payload.data.length > 0;
 }
 
-export function normalizeInactiveValue(value: unknown): boolean {
-  if (typeof value === "boolean") return value === false;
-  if (typeof value === "string") return value.trim().toLowerCase() === "false";
-  if (value && typeof value === "object" && "value" in value) {
-    return normalizeInactiveValue((value as { value?: unknown }).value);
-  }
-  return false;
-}
-
-
-export function extractLoyaltyQCCode(value: unknown): string | undefined {
-  const record = extractObjectRecord(value);
-  if (!record) return undefined;
-
-  return (
-    extractStringValue(record.QCCode) ??
-    extractStringValue(record.qcCode) ??
-    extractStringValue(record.loyaltyQCCode) ??
-    extractStringValue(record.loyaltyCode) ??
-    extractStringValue(record.membershipQCCode) ??
-    extractStringValue(record.membershipCode) ??
-    extractStringValue(record.code)
-  );
-}
-
- function extractQivosPersons(
+function extractQivosPersons(
   responseData: unknown,
 ): Record<string, unknown>[] {
   const root = extractObjectRecord(responseData);
@@ -290,27 +305,6 @@ export function extractLoyaltyQCCode(value: unknown): string | undefined {
   }
 
   return root ? [root] : [];
-}
-
-export function collectInactiveLoyaltyMemberships(
-  person: Record<string, unknown>,
-): Array<{ personQCCode: string; loyaltyQCCode: string }> {
-  const personQCCode = extractPersonQCCode(person);
-  if (!personQCCode) return [];
-
-  const memberships = Array.isArray(person.loyaltyMembershipData)
-    ? person.loyaltyMembershipData
-    : [];
-
-  return memberships.flatMap((membership) => {
-    const record = extractObjectRecord(membership);
-    if (!record || !normalizeInactiveValue(record.active)) return [];
-
-    const loyaltyQCCode = extractLoyaltyQCCode(record);
-    if (!loyaltyQCCode) return [];
-
-    return [{ personQCCode, loyaltyQCCode }];
-  });
 }
 
 async function fetchFreshLoyaltyBalanceFromQivos(params: {
@@ -863,13 +857,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const freshCanRedeem =
       loyaltyData.canRedeem ?? metafields.canRedeem ?? false;
 
-    const redeemPoint = freshPointBalance ?? metafields.redeemPoint;
+    let redeemPoint = freshPointBalance ?? metafields.redeemPoint;
 
     const pointBalanceChanged =
       freshPointBalance !== undefined &&
       freshPointBalance !== metafields.redeemPoint;
 
     const canRedeemChanged = freshCanRedeem !== (metafields.canRedeem ?? false);
+    const shouldConvertToCredit =
+      freshCanRedeem === true && !!freshPointBalance && pointBalanceChanged;
 
     const shouldUpdateMetafields = pointBalanceChanged || canRedeemChanged;
 
@@ -881,7 +877,88 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       shouldUpdateMetafields,
     });
 
-    if (shouldUpdateMetafields) {
+    let loyaltyMetafieldsSaved = false;
+
+    if (shouldUpdateMetafields && !shouldConvertToCredit) {
+      try {
+        await saveCustomerIdentityMetafields({
+          shop,
+          customerId,
+          values: {
+            redeemPoint,
+            canRedeem: freshCanRedeem,
+          },
+        });
+        loyaltyMetafieldsSaved = true;
+      } catch (error) {
+        console.warn("Failed to save loyalty metafields:", error);
+      }
+    }
+
+    // Credit store balance only when:
+    // 1. canRedeem is true
+    // 2. We have a fresh point balance
+    // 3. The balance actually changed from what's stored
+    if (shouldConvertToCredit) {
+      try {
+        const redeemPoints = Number(freshPointBalance);
+        if (!Number.isFinite(redeemPoints) || redeemPoints <= 0) {
+          throw new Error(
+            `Invalid redeem points value: ${freshPointBalance}`,
+          );
+        }
+
+        const creditResult = await creditCustomerStoreCredit({
+          shop,
+          customerId,
+          redeemPoints,
+        });
+
+        if (creditResult.skipped) {
+          try {
+            await saveCustomerIdentityMetafields({
+              shop,
+              customerId,
+              values: {
+                redeemPoint,
+                canRedeem: freshCanRedeem,
+              },
+            });
+            loyaltyMetafieldsSaved = true;
+          } catch (error) {
+            console.warn(
+              "Failed to save loyalty metafields after skipped credit:",
+              error,
+            );
+          }
+        } else {
+          const remainingRedeemPoints =
+            creditResult.remainingRedeemPoints ?? 0;
+          redeemPoint = String(remainingRedeemPoints);
+
+          try {
+            await saveCustomerIdentityMetafields({
+              shop,
+              customerId,
+              values: {
+                redeemPoint,
+                canRedeem: freshCanRedeem,
+              },
+            });
+            loyaltyMetafieldsSaved = true;
+          } catch (error) {
+            console.warn(
+              "Failed to save post-conversion loyalty metafields:",
+              error,
+            );
+          }
+        }
+      } catch (error) {
+        console.warn("Failed to credit customer store balance:", error);
+      }
+    }
+
+    if (shouldUpdateMetafields && !loyaltyMetafieldsSaved) {
       try {
         await saveCustomerIdentityMetafields({
           shop,
@@ -892,30 +969,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           },
         });
       } catch (error) {
-        console.warn("Failed to save loyalty metafields:", error);
-      }
-    }
-
-    // Credit store balance only when:
-    // 1. canRedeem is true
-    // 2. We have a fresh point balance
-    // 3. The balance actually changed from what's stored
-    if (freshCanRedeem === true && freshPointBalance && pointBalanceChanged) {
-      try {
-        const redeemPoints = Number(freshPointBalance);
-        if (!Number.isFinite(redeemPoints) || redeemPoints <= 0) {
-          throw new Error(
-            `Invalid redeem points value: ${freshPointBalance}`,
-          );
-        }
-
-        await creditCustomerStoreCredit({
-          shop,
-          customerId,
-          redeemPoints,
-        });
-      } catch (error) {
-        console.warn("Failed to credit customer store balance:", error);
+        console.warn("Failed to save loyalty metafields on fallback:", error);
       }
     }
 

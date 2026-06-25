@@ -23,7 +23,8 @@ import {
   syncCustomerMetafields,
   saveCustomerIdentityMetafields,
 } from "../../utils/shopify-customer-metafields.server";
-import { collectInactiveLoyaltyMemberships, extractLoyaltyQCCode, normalizeInactiveValue } from "../customer-account.metafields";
+import { collectInactiveLoyaltyMemberships, extractLoyaltyQCCode } from "app/utils/customer-account-loyalty.server";
+
 
 const QIVOS_PERSONS_SEARCH_URL =
   `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/persons/search`;

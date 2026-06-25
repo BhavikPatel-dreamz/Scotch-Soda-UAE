@@ -175,7 +175,7 @@ function extractFirstFromArrayField(
 //   return undefined;
 // }
 
-async function ensureMetafieldDefinitions(
+export async function ensureMetafieldDefinitions(
   adminClient: AdminGraphqlClient,
   namespace: string,
 ): Promise<void> {
