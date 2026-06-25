@@ -220,30 +220,34 @@ export async function creditCustomerStoreCredit({
       balanceData.data?.customer?.storeCreditAccounts?.nodes?.[0];
 
     const storeCreditAccountId = accountNode?.id;
-  const storeCreditCurrencyCode = accountNode?.balance?.currencyCode || data.shop.currencyCode;
-  const previousBalance = parseFloat(accountNode?.balance?.amount ?? "0");
-
-  if (previousBalance > 0) {
+    const storeCreditCurrencyCode =
+      accountNode?.balance?.currencyCode || data.shop.currencyCode;
+    const previousBalance = parseFloat(accountNode?.balance?.amount ?? "0");
     const previousBalanceAmount = Number(previousBalance.toFixed(2));
-    if (previousBalanceAmount === creditAmount) {
-    return {
-      success: true,
-      skipped: true,
-      skipReason: "Store credit already matches redeem points",
-      shop,
-      customerId,
-      redeemPoints,
-      creditAmount,
-      previousBalance,
-      finalBalance: accountNode?.balance?.amount,
-      remainingRedeemPoints: redeemPoints,
-      data: balanceData.data,
-    };
-    }
-  }
+    const targetBalance = creditAmount;
+    const balanceDelta = Number(
+      (targetBalance - previousBalanceAmount).toFixed(2),
+    );
 
-  // Step 2: Remove old balance if it exists
-  if (previousBalance > 0) {
+    if (balanceDelta === 0) {
+      return {
+        success: true,
+        skipped: true,
+        skipReason: "Store credit already matches redeem points",
+        shop,
+        customerId,
+        redeemPoints,
+        creditAmount,
+        previousBalance,
+        finalBalance: accountNode?.balance?.amount,
+        remainingRedeemPoints: redeemPoints,
+        data: balanceData.data,
+      };
+    }
+
+    const creditId = storeCreditAccountId ?? customerId;
+
+    if (balanceDelta < 0) {
       if (!storeCreditAccountId) {
         throw new Error("Store credit account ID not found, cannot debit.");
       }
@@ -270,7 +274,7 @@ export async function creditCustomerStoreCredit({
             id: storeCreditAccountId,
             debitInput: {
               debitAmount: {
-                amount: toMoneyAmount(previousBalance),
+                amount: toMoneyAmount(Math.abs(balanceDelta)),
                 currencyCode: storeCreditCurrencyCode,
               },
             },
@@ -310,8 +314,22 @@ export async function creditCustomerStoreCredit({
       }
     }
 
-    // Step 3: Add new credit amount
-    const creditId = storeCreditAccountId ?? customerId;
+    // Step 3: Add/credit only the net delta amount
+    const creditAmountForMutation = balanceDelta > 0 ? balanceDelta : 0;
+
+    if (creditAmountForMutation === 0) {
+      return {
+        success: true,
+        shop,
+        customerId,
+        redeemPoints,
+        creditAmount,
+        previousBalance,
+        finalBalance: toMoneyAmount(targetBalance),
+        remainingRedeemPoints: 0,
+        data: undefined,
+      };
+    }
 
     const creditResponse = await adminClient.graphql(
       `#graphql
@@ -346,7 +364,7 @@ export async function creditCustomerStoreCredit({
           id: creditId,
           creditInput: {
             creditAmount: {
-              amount: toMoneyAmount(creditAmount),
+              amount: toMoneyAmount(creditAmountForMutation),
               currencyCode: storeCreditCurrencyCode,
             },
           },

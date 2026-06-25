@@ -43,6 +43,7 @@
  * @property {boolean} creatingPerson
  * @property {boolean} activatingAccount
  * @property {boolean} savingMetafields
+ * @property {boolean} redeemPointLoading
  * @property {string} infoMessage
  * @property {string} errorMessage
  * @property {string} phoneError
@@ -125,7 +126,7 @@
 /* global globalThis */
 import "@shopify/ui-extensions/preact";
 import { render } from "preact";
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 
 const APP_URL = "https://dd-79.dynamicdreamz.com";
 const CUSTOMER_METAFIELDS_ENDPOINT = `${APP_URL}/customer-account/metafields`;
@@ -217,6 +218,7 @@ function createInitialState(customerId, initialLoading = true) {
     creatingPerson: false,
     activatingAccount: false,
     savingMetafields: false,
+    redeemPointLoading: false,
     infoMessage: "",
     errorMessage: "",
     phoneError: "",
@@ -727,9 +729,11 @@ function Extension() {
   );
 
   /**
-   * @param {{allowQivosBackfill?: boolean}=} options
+   * @param {{allowQivosBackfill?: boolean, quickLoad?: boolean, background?: boolean}=} options
    */
   async function fetchCustomerMetafields(options = {}) {
+    const { allowQivosBackfill, quickLoad = false, background = false } = options;
+
     // @ts-ignore
     const stringify = (val) => {
       if (typeof val === "string") return val;
@@ -756,16 +760,31 @@ function Extension() {
       setState((prev) => ({
         ...prev,
         loading: false,
+        redeemPointLoading: false,
         errorMessage: "Customer account not found.",
       }));
       return { linked: false, loyaltySync: false };
     }
 
+    setState((prev) => ({
+      ...prev,
+      loading: quickLoad || background ? false : prev.screen !== "success",
+      redeemPointLoading: true,
+      infoMessage:
+        background || prev.screen === "success"
+          ? "Refreshing your loyalty points..."
+          : "Checking your Be U loyalty dashboard...",
+      errorMessage: "",
+    }));
+
     const idToken = await globalThis.shopify.sessionToken.get();
     const shopFromToken = getShopFromSessionToken(idToken);
     const url = new URL(CUSTOMER_METAFIELDS_ENDPOINT);
     url.searchParams.set("customerId", customerId);
-    if (options.allowQivosBackfill) {
+    if (quickLoad) {
+      url.searchParams.set("quickLoad", "1");
+    }
+    if (allowQivosBackfill) {
       url.searchParams.set("allowQivosBackfill", "1");
     }
 
@@ -820,16 +839,17 @@ function Extension() {
 
     const canRedeem = result.canRedeem === true;
 
-    const linked =
+    const dashboardReady =
       !needsActivation &&
-      result.loyaltySync === true &&
       Boolean(result.personQCCode && result.loyaltyQCCode && rawPhone);
+    const linked = dashboardReady && result.loyaltySync === true;
 
     setState((prev) => ({
       ...prev,
       loading: false,
-      screen: linked ? "success" : prev.screen === "otp" ? "otp" : "phone",
-      linked: linked,
+      redeemPointLoading: false,
+      screen: dashboardReady ? "success" : prev.screen === "otp" ? "otp" : "phone",
+      linked: dashboardReady,
       shop: normalizeShopDomain(result.shop) || shopFromToken || prev.shop,
       customerId,
       email: result.email ?? "",
@@ -845,7 +865,9 @@ function Extension() {
       loyaltyQCCode: result.loyaltyQCCode ?? "",
       tier: result.tier ?? "",
       loyaltySync: result.loyaltySync === true,
-      infoMessage: linked ? "Your Be U account is linked." : prev.infoMessage,
+      infoMessage: dashboardReady
+        ? "Your Be U account is linked and ready."
+        : prev.infoMessage,
       errorMessage: "",
       phoneError: "",
       hasSavedPhone,
@@ -964,6 +986,9 @@ function Extension() {
     return () => clearTimeout(timer);
   }, [state.screen, state.resendSecondsLeft]);
 
+  const initialShopRef = useRef(state.shop);
+  const initialPhoneRef = useRef(state.phone);
+
   useEffect(() => {
     let active = true;
 
@@ -971,10 +996,15 @@ function Extension() {
       try {
         if (!active) return;
 
-        const refreshed = await fetchCustomerMetafields();
+        const refreshed = await fetchCustomerMetafields({ quickLoad: true });
+        if (!active) return;
 
-        const resolvedShop = refreshed.shop ?? state.shop;
-        const resolvedPhone = refreshed.phone ?? state.phone;
+        void fetchCustomerMetafields({ background: true }).catch((error) => {
+          console.warn("[Be U] Background loyalty refresh failed:", error);
+        });
+
+        const resolvedShop = refreshed.shop ?? initialShopRef.current;
+        const resolvedPhone = refreshed.phone ?? initialPhoneRef.current;
 
         if (refreshed.linked) {
           if (refreshed.qivosBackfillRequired) {
@@ -1624,6 +1654,10 @@ function Extension() {
     state.countryOptions,
   );
   const metafieldRows = buildMetafieldRows(state, selectedCountry);
+  const shouldShowDashboard =
+    state.screen === "success" ||
+    (state.personQCCode && state.loyaltyQCCode &&
+      (state.redeemPoint || state.pointBalance));
 
   if (state.loading) {
     return (
@@ -1668,7 +1702,7 @@ function Extension() {
     );
   }
 
-  if (state.screen === "success" || (state.linked && state.otpFlowCompleted)) {
+  if (shouldShowDashboard) {
     return (
       <s-box padding="large">
         <s-stack direction="block" gap="large" alignItems="center">
@@ -1710,9 +1744,15 @@ function Extension() {
                         <s-grid-item>
                           <s-stack direction="block" gap="small-100">
                             <s-text>Redeem points</s-text>
-                            <s-heading>
-                              {state.redeemPoint || state.pointBalance} Points
-                            </s-heading>
+                            {state.redeemPointLoading ? (
+                              <s-text>
+                                Processing your redeem points... Please wait.
+                              </s-text>
+                            ) : (
+                              <s-heading>
+                                {state.redeemPoint || state.pointBalance} Points
+                              </s-heading>
+                            )}
                           </s-stack>
                         </s-grid-item>
                       ) : null}
