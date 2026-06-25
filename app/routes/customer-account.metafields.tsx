@@ -879,7 +879,29 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     let loyaltyMetafieldsSaved = false;
 
-    if (shouldUpdateMetafields && !shouldConvertToCredit) {
+    // If we have a fresh point balance and it doesn't match stored value,
+    // persist it immediately so DB reflects the latest balance.
+    if (
+      freshPointBalance !== undefined &&
+      freshPointBalance !== metafields.redeemPoint
+    ) {
+      try {
+        await saveCustomerIdentityMetafields({
+          shop,
+          customerId,
+          values: {
+            redeemPoint: String(freshPointBalance),
+            canRedeem: freshCanRedeem,
+          },
+        });
+        loyaltyMetafieldsSaved = true;
+        redeemPoint = String(freshPointBalance);
+      } catch (error) {
+        console.warn("Failed to save immediate loyalty metafields:", error);
+      }
+    }
+
+    if (shouldUpdateMetafields && !shouldConvertToCredit && !loyaltyMetafieldsSaved) {
       try {
         await saveCustomerIdentityMetafields({
           shop,

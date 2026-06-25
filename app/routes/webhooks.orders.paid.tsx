@@ -6,6 +6,17 @@ import {
 } from "../utils/order-sync.server";
 
 export async function action({ request }: ActionFunctionArgs) {
+  let requestCopyForLogs: Request | null = null;
+
+  try {
+    requestCopyForLogs = request.clone();
+  } catch (cloneError) {
+    console.warn(
+      "[orders/paid] could not clone request for debug logging before authentication",
+      cloneError,
+    );
+  }
+
   try {
     const { topic, shop, payload } = await authenticate.webhook(request);
     console.log(`[orders/paid] webhook received for shop ${shop} with topic ${topic}`);
@@ -23,11 +34,17 @@ export async function action({ request }: ActionFunctionArgs) {
   } catch (error) {
     const requestHeaders = Object.fromEntries(request.headers.entries());
     let rawBodyLength: number | null = null;
-    try {
-      const rawBody = await request.clone().text();
-      rawBodyLength = rawBody.length;
-    } catch (bodyError) {
-      console.warn("[orders/paid] failed to read request body for debug logging", bodyError);
+
+    if (requestCopyForLogs) {
+      try {
+        const rawBody = await requestCopyForLogs.text();
+        rawBodyLength = rawBody.length;
+      } catch (bodyError) {
+        console.warn(
+          "[orders/paid] failed to read request body for debug logging",
+          bodyError,
+        );
+      }
     }
 
     console.error("[orders/paid] webhook authentication failed:", error, {
