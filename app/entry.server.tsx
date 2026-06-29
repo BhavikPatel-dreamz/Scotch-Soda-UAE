@@ -1,3 +1,5 @@
+import "dotenv/config";
+
 import { PassThrough } from "stream";
 import { renderToPipeableStream } from "react-dom/server";
 import { ServerRouter } from "react-router";
@@ -47,11 +49,12 @@ export default async function handleRequest(
           pipe(body);
         },
         onShellError(error) {
+          console.error("[SSR] Shell error:", error);
           reject(error);
         },
         onError(error) {
           responseStatusCode = 500;
-          console.error(error);
+          console.error("[SSR] Render error:", error?.message || error, error?.stack || "");
         },
       }
     );

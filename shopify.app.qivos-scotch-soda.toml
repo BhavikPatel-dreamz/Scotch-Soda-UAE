@@ -2,7 +2,7 @@
 
 client_id = "e91df172236cefebd3c7b0d3e596af47"
 name = "BeU-app"
-application_url = "https://dd-79.dynamicdreamz.com"
+application_url = "https://scotch-soda-uae.vercel.app"
 embedded = true
 
 [build]
@@ -40,9 +40,9 @@ api_version = "2026-07"
 scopes = "customer_read_customers,read_customers,read_draft_orders,read_inventory,read_locations,read_markets,read_orders,read_products,read_shipping,read_store_credit_accounts,read_themes,write_customers,write_discounts,write_draft_orders,write_locations,write_online_store_navigation,write_orders,write_products,write_store_credit_account_transactions,write_validations"
 
 [auth]
-redirect_urls = [ "https://dd-79.dynamicdreamz.com/api/auth" ]
+redirect_urls = [ "https://scotch-soda-uae.vercel.app/api/auth" ]
 
 [app_proxy]
-url = "https://dd-79.dynamicdreamz.com"
+url = "https://scotch-soda-uae.vercel.app"
 subpath = "scotch-soda"
 prefix = "apps"

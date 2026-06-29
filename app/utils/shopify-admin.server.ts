@@ -1,5 +1,5 @@
 import prisma from "../db.server";
-import { unauthenticated, apiVersion } from "../shopify.server";
+import { apiVersion } from "../shopify.server";
 
 export type AdminGraphqlClient = {
   graphql: (
@@ -11,103 +11,16 @@ export type AdminGraphqlClient = {
 
 export async function getAdminGraphqlClient(shop: string): Promise<AdminGraphqlClient> {
   console.log(`[getAdminGraphqlClient] Starting for shop: ${shop}`);
-  
-  try {
-    const { admin, session } = await unauthenticated.admin(shop);
-    
-    const now = Date.now();
-   const isExpired = session?.expires 
-  ? new Date(session.expires).getTime() < now + 5 * 60 * 1000
-  : false;
-
-    if (!isExpired) {
-      console.log(`[getAdminGraphqlClient] Library session is valid for ${shop}`);
-      return {
-        graphql: (query, options) => {
-          console.log(`[getAdminGraphqlClient] Executing library GraphQL query for ${shop}`);
-          return admin.graphql(query, options);
-        },
-        usedStoredAccessToken: false,
-      };
-    } else {
-      console.log(`[getAdminGraphqlClient] Library session is expired for ${shop}, entering fallback mode to refresh`);
-    }
-  } catch (error) {
-    console.log(`[getAdminGraphqlClient] unauthenticated.admin failed for ${shop}, entering fallback mode`);
-    if (error instanceof Response) {
-      const body = await error.text().catch(() => "no body");
-      console.warn(`[getAdminGraphqlClient] unauthenticated.admin Response ${error.status}: ${body}`);
-    } else {
-      console.warn(`[getAdminGraphqlClient] unauthenticated.admin error:`, JSON.stringify(error, null, 2));
-    }
-  }
-
-  console.log(`[getAdminGraphqlClient] Fetching session from DB for ${shop}`);
-  const session = await prisma.session.findUnique({
-    where: { id: `offline_${shop}` },
-    select: { 
-      accessToken: true,
-      refreshToken: true, 
-      expires: true,
-    },
-  });
-
-  if (!session?.accessToken) {
-    console.error(`[getAdminGraphqlClient] No session found for ${shop}`);
-    throw new Error(`Could not find a session for shop ${shop}`);
-  }
-
-  const testResponse = await fetch(
-  `https://${shop}/admin/api/${apiVersion}/shop.json`,
-  {
-    headers: {
-      "X-Shopify-Access-Token": session.accessToken,
-    },
-  }
-);
-
-if (testResponse.status === 401) {
-  console.error(`[getAdminGraphqlClient] Stored token is revoked for ${shop}. App needs reinstallation.`);
- 
-  await prisma.session.delete({ where: { id: `offline_${shop}` } }).catch(() => {});
-  throw new Error(`SHOP_NEEDS_REINSTALL:${shop}`);
+  return createFallbackGraphqlClient(shop);
 }
 
-  let accessToken = session.accessToken;
-  const now = Date.now();
-  const expiryTime = session.expires ? new Date(session.expires).getTime() : 0;
-  const isExpired = session.expires 
-    ? expiryTime < now + 5 * 60 * 1000
-    : false;
-
-  if (isExpired && session.refreshToken) {
-    try {
-      console.log(`[getAdminGraphqlClient] Attempting to refresh token for ${shop}`);
-      // Re-fetch to check if already refreshed by another request
-      const latest = await prisma.session.findUnique({
-        where: { id: `offline_${shop}` },
-        select: { accessToken: true, expires: true }
-      });
-      
-      const stillExpired = latest?.expires 
-        ? new Date(latest.expires).getTime() < now + 2 * 60 * 1000
-        : true;
-
-      if (!stillExpired && latest?.accessToken) {
-        console.log(`[getAdminGraphqlClient] Token already refreshed by another process for ${shop}`);
-        accessToken = latest.accessToken;
-      } else {
-        accessToken = await refreshShopifyAccessToken(shop, session.refreshToken);
-        console.log(`[getAdminGraphqlClient] Token refreshed successfully for ${shop}`);
-      }
-    } catch (refreshError) {
-      console.warn(`[getAdminGraphqlClient] Manual refresh failed for ${shop}:`, refreshError);
-    }
-  }
+async function createFallbackGraphqlClient(shop: string): Promise<AdminGraphqlClient> {
+  const session = await getValidatedSession(shop);
 
   return {
     graphql: async (query, options) => {
-      console.log(`[getAdminGraphqlClient] Executing fallback GraphQL query for ${shop} using token: ${accessToken.substring(0, 10)}...`);
+      const token = await getValidAccessToken(shop);
+      console.log(`[createFallbackGraphqlClient] Executing GraphQL query for ${shop} using token: ${token.substring(0, 10)}...`);
       const response = await fetch(
         `https://${shop}/admin/api/${apiVersion}/graphql.json`,
         {
@@ -115,7 +28,7 @@ if (testResponse.status === 401) {
           headers: {
             "Content-Type": "application/json",
             Accept: "application/json",
-            "X-Shopify-Access-Token": accessToken,
+            "X-Shopify-Access-Token": token,
           },
           body: JSON.stringify({
             query,
@@ -123,15 +36,116 @@ if (testResponse.status === 401) {
           }),
         }
       );
-      
+
       if (response.status === 401) {
-          console.warn(`[getAdminGraphqlClient] Fallback query returned 401 Unauthorized for ${shop}`);
+        console.warn(`[createFallbackGraphqlClient] Token returned 401 for ${shop}, attempting refresh`);
+        const freshSession = await getValidatedSession(shop);
+        if (freshSession.accessToken !== token) {
+          const retryResponse = await fetch(
+            `https://${shop}/admin/api/${apiVersion}/graphql.json`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Accept: "application/json",
+                "X-Shopify-Access-Token": freshSession.accessToken,
+              },
+              body: JSON.stringify({
+                query,
+                variables: options?.variables ?? {},
+              }),
+            }
+          );
+          return retryResponse;
+        }
       }
-      
+
       return response;
     },
     usedStoredAccessToken: true,
   };
+}
+
+async function getValidatedSession(shop: string) {
+  console.log(`[getValidatedSession] Fetching session from DB for ${shop}`);
+  const session = await prisma.session.findUnique({
+    where: { id: `offline_${shop}` },
+    select: {
+      accessToken: true,
+      refreshToken: true,
+      expires: true,
+    },
+  });
+
+  if (!session?.accessToken) {
+    console.error(`[getValidatedSession] No session found for ${shop}`);
+    throw new Error(`Could not find a session for shop ${shop}`);
+  }
+
+  const testResponse = await fetch(
+    `https://${shop}/admin/api/${apiVersion}/shop.json`,
+    {
+      headers: {
+        "X-Shopify-Access-Token": session.accessToken,
+      },
+    }
+  );
+
+  if (testResponse.status === 401) {
+    if (session.refreshToken) {
+      console.log(`[getValidatedSession] Token revoked but refresh token available, attempting refresh for ${shop}`);
+      const newToken = await refreshShopifyAccessToken(shop, session.refreshToken);
+      return { accessToken: newToken, refreshToken: session.refreshToken };
+    }
+    console.error(`[getValidatedSession] Stored token is revoked for ${shop}. App needs reinstallation.`);
+    await prisma.session.delete({ where: { id: `offline_${shop}` } }).catch(() => {});
+    throw new Error(`SHOP_NEEDS_REINSTALL:${shop}`);
+  }
+
+  return session;
+}
+
+async function getValidAccessToken(shop: string): Promise<string> {
+  const session = await prisma.session.findUnique({
+    where: { id: `offline_${shop}` },
+    select: { accessToken: true, refreshToken: true, expires: true },
+  });
+
+  if (!session?.accessToken) {
+    throw new Error(`Could not find a session for shop ${shop}`);
+  }
+
+  const now = Date.now();
+  const isExpired = session.expires
+    ? new Date(session.expires).getTime() < now + 5 * 60 * 1000
+    : false;
+
+  if (!isExpired) {
+    return session.accessToken;
+  }
+
+  if (session.refreshToken) {
+    try {
+      const latest = await prisma.session.findUnique({
+        where: { id: `offline_${shop}` },
+        select: { accessToken: true, expires: true },
+      });
+
+      const stillExpired = latest?.expires
+        ? new Date(latest.expires).getTime() < now + 2 * 60 * 1000
+        : true;
+
+      if (!stillExpired && latest?.accessToken) {
+        return latest.accessToken;
+      }
+
+      return await refreshShopifyAccessToken(shop, session.refreshToken);
+    } catch (refreshError) {
+      console.warn(`[getValidAccessToken] Refresh failed for ${shop}:`, refreshError);
+    }
+  }
+
+  return session.accessToken;
 }
 
 async function refreshShopifyAccessToken(shop: string, refreshToken: string): Promise<string> {
@@ -165,7 +179,7 @@ async function refreshShopifyAccessToken(shop: string, refreshToken: string): Pr
     where: { id: `offline_${shop}` },
     data: {
       accessToken: data.access_token,
-      expires: data.expires_in 
+      expires: data.expires_in
         ? new Date(Date.now() + data.expires_in * 1000)
         : new Date(Date.now() + 24 * 60 * 60 * 1000),
       ...(data.refresh_token ? { refreshToken: data.refresh_token } : {}),

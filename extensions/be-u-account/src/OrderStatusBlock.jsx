@@ -128,7 +128,7 @@ import "@shopify/ui-extensions/preact";
 import { render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 
-const APP_URL = "https://dd-79.dynamicdreamz.com";
+const APP_URL = "https://scotch-soda-uae.vercel.app";
 const CUSTOMER_METAFIELDS_ENDPOINT = `${APP_URL}/customer-account/metafields`;
 const CUSTOMER_SEARCH_ENDPOINT = `${APP_URL}/api/proxy/persons/search`;
 const SEND_OTP_ENDPOINT = `${APP_URL}/api/proxy/sendOTP`;
