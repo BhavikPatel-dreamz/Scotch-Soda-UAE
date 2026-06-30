@@ -6,7 +6,7 @@
 api_version = "2026-04"
 
 [[extensions]]
-name = "Be U account"
+name = "Be U Rewards"
 handle = "be-u-account"
 type = "ui_extension"
 uid = "1948864f-2241-24d0-ab53-4e3a69043abed416a01f"

@@ -53,6 +53,7 @@
  * @property {boolean} needsActivation
  * @property {boolean} isExistingPerson
  * @property {boolean} needsPatch
+ * @property {boolean} initialCheckDone
  * @property {InactiveMembership[]} inactiveMemberships
  * @property {CountryOption[]} countryOptions
  */
@@ -150,42 +151,6 @@ const COUNTRY_OPTIONS = [
     validate: (digits) => /^5[0-9]\d{7}$/.test(digits),  // ✅ 50-58 prefix
     errorMessage: "Enter a valid UAE mobile number starting with 5 (e.g. 501234567).",
   },
-  // {
-  //   code: "SA",
-  //   apiCode: "sa",
-  //   dialCode: "+966",
-  //   name: "Saudi Arabia",
-  //   registrationStoreCode: "ECAE-D",
-  //   registrationCountryCode: "ae",
-  //   phonePlaceholder: "50 123 4567",
-  //   maxDigits: 9,
-  //   validate: (/** @type {string} */ digits) => /^5\d{8}$/.test(digits),
-  //   errorMessage: "Enter a valid Saudi mobile number starting with 5.",
-  // },
-  // {
-  //   code: "CA",
-  //   apiCode: "ca",
-  //   dialCode: "+1",
-  //   name: "Canada",
-  //   registrationStoreCode: "ECAE-D",
-  //   registrationCountryCode: "ae",
-  //   phonePlaceholder: "604 123 4567",
-  //   maxDigits: 10,
-  //   validate: (/** @type {string} */ digits) => /^[2-9]\d{9}$/.test(digits),
-  //   errorMessage: "Enter a valid 10 digit Canadian mobile number.",
-  // },
-  // {
-  //   code: "IN",
-  //   apiCode: "in",
-  //   dialCode: "+91",
-  //   name: "India",
-  //   registrationStoreCode: "ECAE-D",
-  //   registrationCountryCode: "ae",
-  //   phonePlaceholder: "98765 43210",
-  //   maxDigits: 10,
-  //   validate: (/** @type {string} */ digits) => /^[6-9]\d{9}$/.test(digits),
-  //   errorMessage: "Enter a valid 10 digit Indian mobile number.",
-  // },
 ];
 
 /**
@@ -197,6 +162,7 @@ function createInitialState(customerId, initialLoading = true) {
   return {
     loading: initialLoading,
     screen: "phone",
+    initialCheckDone: false,
     linked: false,
     shop: "",
     customerId: customerId ?? "",
@@ -329,12 +295,6 @@ function mergeCountryOptions(
 }
 
 /**
- * @param {Array<Object>} raw
- * @param {CountryOption[]=} defaultOptions
- * @returns {CountryOption[]}
- */
-/**
- * @param {Array<Object>|undefined} raw
  * @param {Array<Object>|undefined} raw
  * @param {CountryOption[]=} defaultOptions
  * @returns {CountryOption[]}
@@ -770,10 +730,10 @@ function Extension() {
       ...prev,
       loading: quickLoad || background ? false : prev.screen !== "success",
       redeemPointLoading: true,
-      infoMessage:
-        background || prev.screen === "success"
-          ? "Refreshing your loyalty points..."
-          : "Checking your Be U loyalty dashboard...",
+      // infoMessage:
+      //   background || prev.screen === "success"
+      //     ? "Refreshing your Reward points..."
+      //     : "Checking your Be U Reward dashboard...",
       errorMessage: "",
     }));
 
@@ -848,7 +808,7 @@ function Extension() {
       ...prev,
       loading: false,
       redeemPointLoading: false,
-      screen: dashboardReady ? "success" : prev.screen === "otp" ? "otp" : "phone",
+      screen: dashboardReady || result.personQCCode ? "success" : prev.screen === "otp" ? "otp" : "phone",
       linked: dashboardReady,
       shop: normalizeShopDomain(result.shop) || shopFromToken || prev.shop,
       customerId,
@@ -1016,6 +976,7 @@ function Extension() {
               infoMessage:
                 "Please verify your phone number to update your Be U profile details.",
               loading: false,
+              initialCheckDone: true,   // ← add
             }));
           } else {
             setState((prev) => ({
@@ -1024,6 +985,7 @@ function Extension() {
               linked: true,
               otpFlowCompleted: true,
               loading: false,
+              initialCheckDone: true,   // ← add
             }));
           }
           return;
@@ -1039,40 +1001,33 @@ function Extension() {
             setState((prev) => ({
               ...prev,
               screen: "otp",
-              resendSecondsLeft: Math.min(
-                RESEND_OTP_DELAY_SECONDS,
-                secondsLeft,
-              ),
+              resendSecondsLeft: Math.min(RESEND_OTP_DELAY_SECONDS, secondsLeft),
               loading: false,
+              initialCheckDone: true,   // ← add
             }));
+            return; // ← also add this return so the bottom setState doesn't run twice
           } else {
             try {
-              sessionStorage.removeItem(
-                getOtpStorageKey(resolvedShop, resolvedPhone),
-              );
+              sessionStorage.removeItem(getOtpStorageKey(resolvedShop, resolvedPhone));
             } catch (e) {
               void e;
             }
-            setState((prev) => ({
-              ...prev,
-              loading: false,
-            }));
           }
         }
 
         setState((prev) => ({
           ...prev,
           loading: false,
+          initialCheckDone: true,   // ← add
         }));
       } catch (error) {
         if (!active) return;
         setState((prev) => ({
           ...prev,
           loading: false,
+          initialCheckDone: true,   // ← add
           errorMessage:
-            error instanceof Error
-              ? error.message
-              : "Unable to load account status.",
+            error instanceof Error ? error.message : "Unable to load account status.",
         }));
       }
     }
@@ -1659,23 +1614,22 @@ function Extension() {
     (state.personQCCode && state.loyaltyQCCode &&
       (state.redeemPoint || state.pointBalance));
 
-  if (state.loading) {
+  if (state.loading || !state.initialCheckDone) {
     return (
       <s-box padding="large">
         <s-stack direction="block" alignItems="center">
-          <s-text>Loading Be U loyalty status...</s-text>
+          <s-text>Loading Be U Reward status...</s-text>
         </s-stack>
       </s-box>
     );
   }
-
   if (state.screen === "activation") {
     return (
       <s-box padding="large">
         <s-stack direction="block" gap="large" alignItems="center">
           <s-box maxInlineSize="640px" inlineSize="100%">
             <s-stack direction="block" gap="large">
-              <s-heading>Be U loyalty</s-heading>
+              <s-heading>Be U Reward</s-heading>
               <s-banner tone="warning" heading="Account needs activation">
                 <s-text>
                   We found an inactive Be U membership on your account. Tap the
@@ -1703,18 +1657,19 @@ function Extension() {
   }
 
   if (shouldShowDashboard) {
+    const isMemberMessage = state.isExistingPerson
+      ? "Your Be U Account has been linked, you can now shop online and earn rewards!"
+      : "Your Be U Account has been created, download the Be U Mobile App to enjoy full benefits.";
+
     return (
       <s-box padding="large">
         <s-stack direction="block" gap="large" alignItems="center">
           <s-box maxInlineSize="640px" inlineSize="100%">
             <s-stack direction="block" gap="large">
-              <s-heading>Be U loyalty</s-heading>
+              <s-heading>Be U Rewards</s-heading>
 
               <s-banner tone="success" heading="🎉 Congratulations!">
-                <s-text>
-                  Your Be U loyalty account is ready! You can now enjoy all
-                  your loyalty benefits.
-                </s-text>
+                <s-text>{isMemberMessage}</s-text>
               </s-banner>
 
               {state.infoMessage ? (
@@ -1738,16 +1693,16 @@ function Extension() {
                     <s-text>Account summary</s-text>
                     <s-grid
                       gap="base"
-                      gridTemplateColumns="repeat(auto-fit, minmax(160px, 1fr))"
+                      gridTemplateColumns="repeat(auto-fit, minmax(180px, 1fr))"
                     >
                       {state.redeemPoint || state.pointBalance ? (
                         <s-grid-item>
                           <s-stack direction="block" gap="small-100">
-                            <s-text>Redeem points</s-text>
+                            <s-text>Points</s-text>
                             {state.redeemPointLoading ? (
-                              <s-text>
-                                Processing your redeem points... Please wait.
-                              </s-text>
+                              <s-stack direction="block" alignment="center">
+                                <s-spinner accessibilityLabel="Loading redeem points" />
+                              </s-stack>
                             ) : (
                               <s-heading>
                                 {state.redeemPoint || state.pointBalance} Points
@@ -1756,37 +1711,19 @@ function Extension() {
                           </s-stack>
                         </s-grid-item>
                       ) : null}
+                      {state.tier ? (
+                        <s-grid-item>
+                          <s-stack direction="block" gap="small-100">
+                            <s-text>Membership Tier</s-text>
+                            <s-heading>{state.tier}</s-heading>
+                          </s-stack>
+                        </s-grid-item>
+                      ) : null}
                     </s-grid>
                   </s-stack>
                 </s-box>
               ) : null}
 
-              {metafieldRows.length ? (
-                <s-box
-                  borderWidth="base"
-                  borderRadius="base"
-                  padding="large"
-                  background="subdued"
-                >
-                  <s-stack direction="block" gap="base">
-                    <s-text>Customer details</s-text>
-                    {metafieldRows.map((item) => (
-                      <s-grid
-                        key={item.label}
-                        gap="base"
-                        gridTemplateColumns="minmax(140px, 180px) 1fr"
-                      >
-                        <s-grid-item>
-                          <s-text>{item.label}</s-text>
-                        </s-grid-item>
-                        <s-grid-item>
-                          <s-text>{item.value}</s-text>
-                        </s-grid-item>
-                      </s-grid>
-                    ))}
-                  </s-stack>
-                </s-box>
-              ) : null}
             </s-stack>
           </s-box>
         </s-stack>
@@ -1802,14 +1739,14 @@ function Extension() {
       <s-stack direction="block" gap="large" alignItems="center">
         <s-box maxInlineSize="640px" inlineSize="100%">
           <s-stack direction="block" gap="large">
-            <s-heading>Be U loyalty</s-heading>
+            <s-heading>Be U Rewards</s-heading>
             <s-text>
               {state.screen === "otp"
                 ? "Please enter the verification code sent to your phone number."
                 // @ts-ignore
                 : state.screen === "activation"
-                  ? "Your OTP is verified. Activate your Be U loyalty account to finish linking."
-                  : "Enter your mobile number to connect your Be U loyalty account."}
+                  ? "Your OTP is verified. Activate your Be U Rewards account to finish linking."
+                  : "Enter your mobile number to link your Be U Rewards account or to create new account."}
             </s-text>
 
             {state.needsActivation ? (
