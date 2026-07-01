@@ -808,7 +808,7 @@ function Extension() {
       ...prev,
       loading: false,
       redeemPointLoading: false,
-      screen: dashboardReady || result.personQCCode ? "success" : prev.screen === "otp" ? "otp" : "phone",
+      screen: dashboardReady ? "success" : prev.screen === "otp" ? "otp" : "phone",
       linked: dashboardReady,
       shop: normalizeShopDomain(result.shop) || shopFromToken || prev.shop,
       customerId,
@@ -1262,7 +1262,7 @@ function Extension() {
           : {}),
       });
 
-      const refreshed = await fetchCustomerMetafields();
+      const refreshed = await fetchCustomerMetafields({ quickLoad: true });
 
       // ✅ Save metafields after person creation
       await saveCustomerMetafields({
@@ -1372,6 +1372,7 @@ function Extension() {
       }
 
       const refreshed = await fetchCustomerMetafields({
+        quickLoad: true,
         allowQivosBackfill: true,
       });
       const refreshedInactiveMemberships = Array.isArray(
