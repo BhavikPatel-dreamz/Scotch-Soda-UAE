@@ -895,14 +895,10 @@ function Extension() {
         body: JSON.stringify({
           shop: requestShop,
           customerId,
-          email: updates.email ?? state.email,
           phone: updates.phone ?? state.phone,
           countryCode: updates.countryCode ?? state.countryCode,
-          firstName: updates.firstName ?? state.firstName,
-          lastName: updates.lastName ?? state.lastName,
           personQCCode: updates.personQCCode ?? state.personQCCode,
           loyaltyQCCode: updates.loyaltyQCCode ?? state.loyaltyQCCode,
-          pointBalance: updates.pointBalance ?? state.pointBalance,
           redeemPoint: updates.redeemPoint ?? state.redeemPoint,
           canRedeem:
             updates.canRedeem !== undefined

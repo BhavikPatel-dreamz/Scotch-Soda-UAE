@@ -5,7 +5,7 @@ import {
 } from "./shopify-admin.server";
 import {
   findFirstNestedValue,
-  normalizeBooleanValue
+  normalizeBooleanValue,
 } from "./qivos-utils.server";
 
 const DEFAULT_METAFIELD_NAMESPACE = "custom";
@@ -528,6 +528,67 @@ function extractFirstArrayQCCode(value: unknown): string | undefined {
   return undefined;
 }
 
+function extractTierValueFromRecord(
+  record: Record<string, unknown>,
+): string | undefined {
+  const tierFields = [
+    "tier",
+    "membershipTier",
+    "loyaltyTier",
+    "tierCode",
+    "tierName",
+    "tier_name",
+    "category",
+  ];
+
+  for (const field of tierFields) {
+    const tierValue = extractStringValue(record[field]);
+    if (tierValue) {
+      return tierValue;
+    }
+  }
+
+  return undefined;
+}
+
+export function extractTierValueFromQivosData(
+  value: unknown,
+): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const queue: unknown[] = Array.isArray(value) ? [...value] : [value];
+  const seen = new Set<unknown>();
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current || seen.has(current)) {
+      continue;
+    }
+
+    seen.add(current);
+
+    const record = extractObjectRecord(current);
+    if (!record) {
+      continue;
+    }
+
+    const tierValue = extractTierValueFromRecord(record);
+    if (tierValue) {
+      return tierValue;
+    }
+
+    for (const nestedValue of Object.values(record)) {
+      if (nestedValue && typeof nestedValue === "object") {
+        queue.push(nestedValue);
+      }
+    }
+  }
+
+  return undefined;
+}
+
 function extractTierFromLoyaltyMembershipData(
   value: unknown,
 ): string | undefined {
@@ -543,9 +604,7 @@ function extractTierFromLoyaltyMembershipData(
       continue;
     }
 
-    const tier =
-      extractStringValue(record.category) ?? extractStringValue(record.tier);
-
+    const tier = extractTierValueFromRecord(record);
     if (!tier) {
       continue;
     }
@@ -693,7 +752,7 @@ function extractMetafieldValues(
   const tier =
     extractTierFromLoyaltyMembershipData(loyaltyMembershipData) ??
     extractTierFromLoyaltyMembershipData(body.loyaltyMembershipData) ??
-    findFirstNestedValue(responseData, ["category", "tier"]);
+    extractTierValueFromQivosData(responseData);
   const canRedeem =
     extractCanRedeemFromLoyaltyMembershipData(loyaltyMembershipData) ??
     extractCanRedeemFromLoyaltyMembershipData(body.loyaltyMembershipData) ??

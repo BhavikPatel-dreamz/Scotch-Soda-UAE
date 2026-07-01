@@ -11,6 +11,7 @@ import {
 } from "../../utils/store.server";
 import {
   CustomerIdentityMetafieldValues,
+  extractTierValueFromQivosData,
   getCustomerIdentityMetafields,
   saveCustomerIdentityMetafields,
   type CustomerMetafieldSyncResult,
@@ -221,6 +222,7 @@ try {
         namespace,
       });
 
+      const tierFromQivosResponse = extractTierValueFromQivosData(responseData);
 
       // Step 2: Only keep values that are missing in metafields
       const valuesToSave: CustomerIdentityMetafieldValues = {
@@ -230,16 +232,21 @@ try {
         loyaltyQCCode: existingMetafields.loyaltyQCCode
           ? undefined // already exists → skip
           : loyaltyQCCodeFromPath, // missing → save path value
+        tier: existingMetafields.tier
+          ? undefined
+          : tierFromQivosResponse,
         // phone intentionally not touched here
       };
 
       const hasAnythingToSave =
-        valuesToSave.personQCCode || valuesToSave.loyaltyQCCode;
+        valuesToSave.personQCCode ||
+        valuesToSave.loyaltyQCCode ||
+        valuesToSave.tier;
 
       if (!hasAnythingToSave) {
         // Both already exist — no metafield write needed
         console.log(
-          "[loyaltyStatus] Both metafields already exist — skipping metafield write.",
+          "[loyaltyStatus] Identity and tier metafields already exist — skipping metafield write.",
           { customerId: resolvedCustomerId, existingMetafields },
         );
 

@@ -228,6 +228,30 @@ function extractCanRedeemFromPerson(person: unknown): boolean | undefined {
   return undefined;
 }
 
+function extractFirstMembershipCategory(person: unknown): string | undefined {
+  if (!person || typeof person !== "object") return undefined;
+
+  const loyaltyMembershipData = (person as { loyaltyMembershipData?: unknown })
+    .loyaltyMembershipData;
+
+  if (!Array.isArray(loyaltyMembershipData) || loyaltyMembershipData.length === 0) {
+    return undefined;
+  }
+
+  const firstMembership = loyaltyMembershipData[0];
+  if (!firstMembership || typeof firstMembership !== "object") {
+    return undefined;
+  }
+
+  const record = firstMembership as Record<string, unknown>;
+  return (
+    extractStringValue(record.category) ??
+    extractStringValue(record.tier) ??
+    extractStringValue(record.tierName) ??
+    extractStringValue(record.membershipTier)
+  );
+}
+
 function extractPersonDetailsFromQivos(person: Record<string, unknown>): {
   firstName?: string;
   lastName?: string;
@@ -313,6 +337,7 @@ async function fetchFreshLoyaltyBalanceFromQivos(params: {
 }): Promise<{
   pointBalance?: string;
   canRedeem?: boolean;
+  tier?: string;
   inactiveMemberships: Array<{ personQCCode: string; loyaltyQCCode: string }>;
 }> {
   const TAG = "[fetchFreshLoyaltyBalance]";
@@ -419,6 +444,7 @@ async function fetchFreshLoyaltyBalanceFromQivos(params: {
 
   let pointBalance: string | undefined;
   let canRedeem: boolean | undefined;
+  let tier: string | undefined;
   const inactiveMemberships: Array<{
     personQCCode: string;
     loyaltyQCCode: string;
@@ -427,6 +453,7 @@ async function fetchFreshLoyaltyBalanceFromQivos(params: {
   for (const [i, person] of persons.entries()) {
     const pb = extractPointBalanceFromPerson(person);
     const cr = extractCanRedeemFromPerson(person);
+    const categoryTier = extractFirstMembershipCategory(person);
     const inactive = collectInactiveLoyaltyMemberships(person);
 
     console.log(`${TAG} STEP 8 — person[${i}]:`, {
@@ -449,15 +476,17 @@ async function fetchFreshLoyaltyBalanceFromQivos(params: {
 
     if (pointBalance === undefined) pointBalance = pb;
     if (cr !== undefined) canRedeem = canRedeem === true ? true : cr;
+    if (tier === undefined && categoryTier) tier = categoryTier;
     inactiveMemberships.push(...inactive);
   }
 
   console.log(`${TAG} STEP 8 — FINAL result:`, {
     pointBalance,
     canRedeem,
+    tier,
     inactiveMemberships,
   });
-  return { pointBalance, canRedeem, inactiveMemberships };
+  return { pointBalance, canRedeem, tier, inactiveMemberships };
 }
 
 async function syncCustomerFromQivosSearch(params: {
@@ -794,6 +823,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       qivosSearchPerformed: boolean;
       pointBalance?: string;
       canRedeem?: boolean;
+      tier?: string;
       personDetailsMissing?: boolean;
     };
 
@@ -805,6 +835,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       }).catch((err): {
         pointBalance?: string;
         canRedeem?: boolean;
+        tier?: string;
         inactiveMemberships: Array<{ personQCCode: string; loyaltyQCCode: string }>;
       } => {
         console.warn("[QIVOS] fetchFreshLoyaltyBalance failed:", err);
@@ -819,8 +850,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         qivosSearchPerformed: true,
         pointBalance: freshBalance.pointBalance,
         canRedeem: freshBalance.canRedeem,
+        tier: freshBalance.tier,
         personDetailsMissing: false,
       };
+   
     } else {
       qivosSearchResult = await syncCustomerFromQivosSearch({
         request,
@@ -845,10 +878,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           ? {
               pointBalance: qivosSearchResult.pointBalance,
               canRedeem: qivosSearchResult.canRedeem,
+              tier: qivosSearchResult.tier,
             }
           : {
               pointBalance: metafields.redeemPoint,
               canRedeem: metafields.canRedeem,
+              tier: metafields.tier,
             },
       ),
     ]);
@@ -856,6 +891,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const freshPointBalance = loyaltyData.pointBalance;
     const freshCanRedeem =
       loyaltyData.canRedeem ?? metafields.canRedeem ?? false;
+    const freshTier = loyaltyData.tier ?? metafields.tier;
 
     let redeemPoint = freshPointBalance ?? metafields.redeemPoint;
 
@@ -867,7 +903,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const shouldConvertToCredit =
       freshCanRedeem === true && !!freshPointBalance && pointBalanceChanged;
 
-    const shouldUpdateMetafields = pointBalanceChanged || canRedeemChanged;
+    const tierChanged =
+      freshTier !== undefined && freshTier !== metafields.tier;
+    const shouldUpdateMetafields =
+      pointBalanceChanged || canRedeemChanged || tierChanged;
 
     console.log("[LOYALTY] Balance check:", {
       storedRedeemPoint: metafields.redeemPoint,
@@ -881,6 +920,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     // If we have a fresh point balance and it doesn't match stored value,
     // persist it immediately so DB reflects the latest balance.
+    if (tierChanged && freshTier) {
+      try {
+        await saveCustomerIdentityMetafields({
+          shop,
+          customerId,
+          values: {
+            tier: freshTier,
+          },
+        });
+        metafields = { ...metafields, tier: freshTier };
+      } catch (error) {
+        console.warn("Failed to save tier metafield:", error);
+      }
+    }
+
     if (
       freshPointBalance !== undefined &&
       freshPointBalance !== metafields.redeemPoint
@@ -1101,14 +1155,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   try {
     const metafieldValues: Record<string, unknown> = {};
     const fieldMappings: Record<string, string> = {
-      email: "email",
       phone: "phone",
       countryCode: "countryCode",
-      firstName: "firstName",
-      lastName: "lastName",
       personQCCode: "personQCCode",
       loyaltyQCCode: "loyaltyQCCode",
-      pointBalance: "pointBalance",
       redeemPoint: "redeemPoint",
       canRedeem: "canRedeem",
       tier: "tier",
