@@ -1696,7 +1696,7 @@ function Extension() {
                           <s-stack direction="block" gap="small-100">
                             <s-text>Points</s-text>
                             {state.redeemPointLoading ? (
-                              <s-stack direction="block" alignment="center">
+                              <s-stack direction="block" alignItems="center">
                                 <s-spinner accessibilityLabel="Loading redeem points" />
                               </s-stack>
                             ) : (
