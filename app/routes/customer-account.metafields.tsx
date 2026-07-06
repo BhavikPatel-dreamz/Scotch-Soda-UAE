@@ -15,7 +15,6 @@ import { getQIVOSToken } from "../utils/qivos-token.server";
 import { QIVOS_BESIDE_API_BASE_URL } from "../utils/constants";
 import {
   backfillMissingQivosPersonDetails,
-  extractPersonQCCode,
   fetchShopifyCustomerProfile,
   qivosPersonNeedsShopifyProfileBackfill,
 } from "../utils/qivos-person-backfill.server";
@@ -23,6 +22,7 @@ import { creditCustomerStoreCredit } from "app/utils/customer-credit.server";
 import {
   collectInactiveLoyaltyMemberships,
 } from "../utils/customer-account-loyalty.server";
+import { parsePhoneNumberFromString } from "libphonenumber-js/min";
 
 const QIVOS_PERSONS_SEARCH_URL = `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/persons/search`;
 
@@ -52,11 +52,61 @@ type CustomerIdentitySnapshot = Awaited<
 
 function normalizePhoneForQivos(phone: string | undefined): string | undefined {
   if (!phone) return undefined;
+  const parsedPhone = parsePhoneNumberFromString(phone);
+  if (parsedPhone?.nationalNumber) {
+    return String(parsedPhone.nationalNumber);
+  }
   const digits = phone.replace(/\D/g, "");
   return digits.length >= 10 ? digits.slice(-10) : undefined;
 }
 
 const shopCountriesCache = new Map<string, { code: string; name: string }[]>();
+
+function normalizeCountryEntry(
+  codeValue: unknown,
+  nameValue: unknown,
+): { code: string; name: string } | null {
+  const code =
+    typeof codeValue === "string"
+      ? codeValue.trim().toUpperCase()
+      : typeof codeValue === "number"
+        ? String(codeValue).trim().toUpperCase()
+        : "";
+  if (!code) return null;
+
+  const name =
+    typeof nameValue === "string"
+      ? nameValue.trim()
+      : typeof nameValue === "number"
+        ? String(nameValue).trim()
+        : "";
+
+  return { code, name: name || code };
+}
+
+function collectCountryEntries(value: unknown, results: { code: string; name: string }[]) {
+  if (!value || typeof value !== "object") return;
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectCountryEntries(item, results);
+    }
+    return;
+  }
+
+  const record = value as Record<string, unknown>;
+  const directCountry = normalizeCountryEntry(
+    record.countryCode ?? record.code ?? record.isoCode,
+    record.name ?? record.label,
+  );
+  if (directCountry) {
+    results.push(directCountry);
+  }
+
+  for (const nestedValue of Object.values(record)) {
+    collectCountryEntries(nestedValue, results);
+  }
+}
 
 async function fetchShopCountries(shop: string) {
   const cached = shopCountriesCache.get(shop);
@@ -64,6 +114,7 @@ async function fetchShopCountries(shop: string) {
 
   try {
     const client = await getAdminGraphqlClient(shop);
+
     const response = await client.graphql(`
       query GetMarketsCountries {
         markets(first: 50) {
@@ -72,8 +123,9 @@ async function fetchShopCountries(shop: string) {
             regions(first: 100) {
               nodes {
                 __typename
+
                 ... on MarketRegionCountry {
-                  countryCode
+                  code
                   name
                 }
               }
@@ -85,25 +137,18 @@ async function fetchShopCountries(shop: string) {
 
     const body = await response.json();
 
-    type MarketCountryNode = { countryCode?: unknown; name?: unknown };
-    type MarketNode = { regions?: { nodes?: MarketCountryNode[] } };
+    const rawCountries: { code: string; name: string }[] = [];
+    collectCountryEntries(body?.data, rawCountries);
 
-    const markets = (body?.data?.markets?.nodes ?? []) as MarketNode[];
-    const countries = markets.flatMap((market) =>
-      (market.regions?.nodes ?? [])
-        .map((country) => {
-          const code =
-            typeof country.countryCode === "string"
-              ? country.countryCode.trim().toUpperCase()
-              : "";
-          const name = typeof country.name === "string" ? country.name.trim() : "";
+    const seen = new Set<string>();
+    const countries = rawCountries.filter((country) => {
+      if (!country?.code || seen.has(country.code)) return false;
+      seen.add(country.code);
+      return true;
+    });
 
-          return code && name ? { code, name } : null;
-        })
-        .filter(
-          (country): country is { code: string; name: string } =>
-            Boolean(country),
-        ),
+    console.log(
+      `[fetchShopCountries] shop=${shop} — found ${countries.length} unique countries`
     );
 
     shopCountriesCache.set(shop, countries);

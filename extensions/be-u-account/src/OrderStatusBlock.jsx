@@ -14,8 +14,6 @@
  * @property {string} registrationCountryCode
  * @property {string} phonePlaceholder
  * @property {number} maxDigits
- * @property {(digits: string) => boolean} validate
- * @property {string} errorMessage
  */
 
 /**
@@ -128,6 +126,7 @@
 import "@shopify/ui-extensions/preact";
 import { render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
+import { getCountryCallingCode, parsePhoneNumberFromString } from "libphonenumber-js/min";
 
 const APP_URL = "https://scotch-soda-uae.vercel.app";
 const CUSTOMER_METAFIELDS_ENDPOINT = `${APP_URL}/customer-account/metafields`;
@@ -137,7 +136,7 @@ const VALIDATE_OTP_ENDPOINT = `${APP_URL}/api/proxy/validateOTP`;
 const PERSONS_ENDPOINT = `${APP_URL}/api/proxy/persons`;
 const RESEND_OTP_DELAY_SECONDS = 30;
 
-/** @type {CountryOption[]} */
+// Fallback list for cases where the Shopify markets query is empty or delayed.
 const COUNTRY_OPTIONS = [
   {
     code: "AE",
@@ -147,11 +146,54 @@ const COUNTRY_OPTIONS = [
     registrationStoreCode: "ECAE-D",
     registrationCountryCode: "ae",
     phonePlaceholder: "50 123 4567",
-    maxDigits: 9,  // ✅ 9 digits: 5 + 8 digits
-    validate: (digits) => /^5[0-9]\d{7}$/.test(digits),  // ✅ 50-58 prefix
-    errorMessage: "Enter a valid UAE mobile number starting with 5 (e.g. 501234567).",
+    maxDigits: 9,
+  },
+  {
+    code: "SA",
+    apiCode: "sa",
+    dialCode: "+966",
+    name: "Saudi Arabia",
+    registrationStoreCode: "ECSA-D",
+    registrationCountryCode: "sa",
+    phonePlaceholder: "5 123 45678",
+    maxDigits: 9,
+  },
+  {
+    code: "IN",
+    apiCode: "in",
+    dialCode: "+91",
+    name: "India",
+    registrationStoreCode: "ECIN-D",
+    registrationCountryCode: "in",
+    phonePlaceholder: "91234 56789",
+    maxDigits: 10,
   },
 ];
+
+function getDialCodeForCountry(code) {
+  const normalizedCode = String(code ?? "").trim().toUpperCase();
+  if (!normalizedCode) return "";
+
+  try {
+    return `+${getCountryCallingCode(normalizedCode)}`;
+  } catch {
+    return "";
+  }
+}
+
+function createEmptyCountryOption(code = "") {
+  const normalizedCode = String(code ?? "").trim().toUpperCase();
+  return {
+    code: normalizedCode,
+    apiCode: normalizedCode.toLowerCase(),
+    dialCode: getDialCodeForCountry(normalizedCode),
+    name: normalizedCode,
+    registrationStoreCode: "",
+    registrationCountryCode: normalizedCode.toLowerCase(),
+    phonePlaceholder: "",
+    maxDigits: 15,
+  };
+}
 
 /**
  * @param {string=} customerId
@@ -169,7 +211,7 @@ function createInitialState(customerId, initialLoading = true) {
     email: "",
     firstName: "",
     lastName: "",
-    countryCode: COUNTRY_OPTIONS[0]?.code ?? "AE",
+    countryCode: COUNTRY_OPTIONS[0]?.code ?? "",
     phone: "",
     otp: "",
     pointBalance: "",
@@ -208,39 +250,31 @@ export default async function extension() {
  * @param {CountryOption[]=} countryOptions
  * @returns {CountryOption}
  */
-function getCountryConfig(countryCode, countryOptions = COUNTRY_OPTIONS) {
-  return (
-    countryOptions.find((country) => country.code === countryCode) ??
-    countryOptions[0] ??
-    COUNTRY_OPTIONS[0]
-  );
+function getCountryConfig(countryCode, countryOptions = []) {
+  const normalizedCode = String(countryCode ?? "").trim().toUpperCase();
+  const found =
+    countryOptions.find((country) => country.code === normalizedCode) ??
+    countryOptions[0];
+  return found ?? createEmptyCountryOption(normalizedCode);
 }
 
 /**
- * Keep only the store's market countries when they exist.
- * The static fallback list is used only when the backend returns nothing.
- *
  * @param {CountryOption[]=} marketCountries
  * @param {string=} shopCountryCode
- * @param {CountryOption[]=} defaultOptions
  * @returns {CountryOption[]}
  */
-function mergeCountryOptions(
-  marketCountries,
-  shopCountryCode,
-  defaultOptions = COUNTRY_OPTIONS,
-) {
+function mergeCountryOptions(marketCountries, shopCountryCode) {
   const normalizedShopCode = String(shopCountryCode ?? "")
     .trim()
     .toUpperCase();
   const marketList = Array.isArray(marketCountries) ? marketCountries : [];
-  if (!marketList.length) return defaultOptions;
+  if (!marketList.length) return COUNTRY_OPTIONS;
 
   /** @type {CountryOption[]} */
   const merged = [];
   const seen = new Set();
 
-  const addCountry = (/** @type {{ code: any; apiCode: any; dialCode: any; name: any; registrationStoreCode: any; registrationCountryCode: any; phonePlaceholder: any; maxDigits: any; validate: any; errorMessage: any; }} */ country) => {
+  const addCountry = (/** @type {{ code: any; apiCode: any; dialCode: any; name: any; registrationStoreCode: any; registrationCountryCode: any; phonePlaceholder: any; maxDigits: any; }} */ country) => {
     if (!country || !country.code) return;
     const code = String(country.code).trim().toUpperCase();
     if (!code || seen.has(code)) return;
@@ -249,7 +283,7 @@ function mergeCountryOptions(
       ...country,
       code,
       apiCode: String(country.apiCode ?? code.toLowerCase()).toLowerCase(),
-      dialCode: String(country.dialCode ?? ""),
+      dialCode: String(country.dialCode ?? getDialCodeForCountry(code) ?? ""),
       name: String(country.name ?? code),
       registrationStoreCode: String(country.registrationStoreCode ?? ""),
       registrationCountryCode: String(
@@ -259,31 +293,16 @@ function mergeCountryOptions(
       maxDigits:
         typeof country.maxDigits === "number" && country.maxDigits > 0
           ? country.maxDigits
-          : 10,
-      validate: typeof country.validate === "function" ? country.validate : () => true,
-      errorMessage: String(country.errorMessage ?? ""),
+          : 15,
     });
   };
 
   if (normalizedShopCode) {
-    const shopCountry =
-      marketList.find((country) => country.code === normalizedShopCode) ??
-      defaultOptions.find((country) => country.code === normalizedShopCode);
+    const shopCountry = marketList.find(
+      (country) => country.code === normalizedShopCode,
+    );
     if (shopCountry) {
       addCountry(shopCountry);
-    } else {
-      addCountry({
-        code: normalizedShopCode,
-        apiCode: normalizedShopCode.toLowerCase(),
-        dialCode: "",
-        name: normalizedShopCode,
-        registrationStoreCode: "",
-        registrationCountryCode: normalizedShopCode.toLowerCase(),
-        phonePlaceholder: "",
-        maxDigits: 10,
-        validate: () => true,
-        errorMessage: "",
-      });
     }
   }
 
@@ -291,24 +310,15 @@ function mergeCountryOptions(
     addCountry(country);
   }
 
-  return merged.length ? merged : defaultOptions;
+  return merged.length ? merged : COUNTRY_OPTIONS;
 }
 
 /**
  * @param {Array<Object>|undefined} raw
- * @param {CountryOption[]=} defaultOptions
  * @returns {CountryOption[]}
  */
-function normalizeAvailableCountries(raw, defaultOptions = COUNTRY_OPTIONS) {
-  if (!Array.isArray(raw) || raw.length === 0) return defaultOptions;
-
-  const nameToCode = {
-    Canada: "CA",
-    India: "IN",
-    "United Arab Emirates": "AE",
-    "Saudi Arabia": "SA",
-    UAE: "AE",
-  };
+function normalizeAvailableCountries(raw) {
+  if (!Array.isArray(raw) || raw.length === 0) return COUNTRY_OPTIONS;
 
   // @ts-ignore
   const normalizeValue = (value) => {
@@ -342,53 +352,48 @@ function normalizeAvailableCountries(raw, defaultOptions = COUNTRY_OPTIONS) {
 
       const name = normalizeValue(
         // @ts-ignore
-        itemObj.name ?? itemObj.country ?? itemObj.label ?? itemObj.value ?? "",
+        itemObj.name ??
+        itemObj.country ??
+        itemObj.label ??
+        itemObj.value ??
+        itemObj.code ??
+        itemObj.apiCode ??
+        itemObj.countryCode ??
+        "",
       );
-      if (!name) return null;
-
-      const found = defaultOptions.find(
-        (c) =>
-          c.name.toLowerCase() === name.toLowerCase() ||
-          c.code.toLowerCase() === name.toLowerCase() ||
-          c.apiCode.toLowerCase() === name.toLowerCase(),
-      );
-      if (found) return found;
-
       const codeFromItem =
         // @ts-ignore
-        normalizeValue(itemObj.code ?? itemObj.apiCode).toUpperCase() ||
+        normalizeValue(
+          itemObj.code ?? itemObj.apiCode ?? itemObj.countryCode,
+        ).toUpperCase() ||
         undefined;
-      // @ts-ignore
-      const codeFromName = nameToCode[name];
-      const code =
-        codeFromItem || codeFromName || name.slice(0, 2).toUpperCase();
+      if (!name && !codeFromItem) return null;
+
+      const code = codeFromItem || name.slice(0, 2).toUpperCase();
       return {
         code,
         apiCode: code.toLowerCase(),
         // @ts-ignore
-        dialCode: normalizeValue(itemObj.dialCode) || "",
-        name,
+        dialCode: normalizeValue(itemObj.dialCode) || getDialCodeForCountry(code) || "",
+        name: name || code,
         registrationStoreCode:
           // @ts-ignore
           normalizeValue(itemObj.registrationStoreCode) || "",
         registrationCountryCode:
           // @ts-ignore
-          normalizeValue(itemObj.registrationCountryCode) ||
-          code.toLowerCase() ||
-          "ae",
+          normalizeValue(itemObj.registrationCountryCode) || code.toLowerCase(),
         // @ts-ignore
         phonePlaceholder: normalizeValue(itemObj.phonePlaceholder) || "",
         maxDigits:
           // @ts-ignore
-          typeof itemObj.maxDigits === "number" ? itemObj.maxDigits : 10,
-        // @ts-ignore
-        validate: () => true,
-        errorMessage: "",
+          typeof itemObj.maxDigits === "number"
+            ? itemObj.maxDigits
+            : 15,
       };
     })
     .filter(Boolean);
 
-  if (!options.length) return defaultOptions;
+  if (!options.length) return COUNTRY_OPTIONS;
 
   /** @type {CountryOption[]} */
   const merged = [];
@@ -403,7 +408,7 @@ function normalizeAvailableCountries(raw, defaultOptions = COUNTRY_OPTIONS) {
       ...country,
       code,
       apiCode: String(country.apiCode ?? code.toLowerCase()).toLowerCase(),
-      dialCode: String(country.dialCode ?? ""),
+      dialCode: String(country.dialCode ?? getDialCodeForCountry(code) ?? ""),
       name: String(country.name ?? code),
       registrationStoreCode: String(country.registrationStoreCode ?? ""),
       registrationCountryCode: String(
@@ -413,12 +418,7 @@ function normalizeAvailableCountries(raw, defaultOptions = COUNTRY_OPTIONS) {
       maxDigits:
         typeof country.maxDigits === "number" && country.maxDigits > 0
           ? country.maxDigits
-          : 10,
-      validate:
-        typeof country.validate === "function"
-          ? country.validate
-          : () => true,
-      errorMessage: String(country.errorMessage ?? ""),
+          : 15,
     });
   };
 
@@ -427,12 +427,8 @@ function normalizeAvailableCountries(raw, defaultOptions = COUNTRY_OPTIONS) {
     pushCountry(country);
   }
 
-  for (const country of defaultOptions) {
-    pushCountry(country);
-  }
-
   // @ts-ignore
-  return merged.length ? merged : defaultOptions;
+  return merged.length ? merged : COUNTRY_OPTIONS;
 }
 
 /**
@@ -444,7 +440,7 @@ function normalizeAvailableCountries(raw, defaultOptions = COUNTRY_OPTIONS) {
 function sanitizePhoneInput(
   value,
   countryCode,
-  countryOptions = COUNTRY_OPTIONS,
+  countryOptions = [],
 ) {
   const country = getCountryConfig(countryCode, countryOptions);
   return value.replace(/\D/g, "").slice(0, country.maxDigits);
@@ -456,13 +452,25 @@ function sanitizePhoneInput(
  * @param {CountryOption[]=} countryOptions
  * @returns {string}
  */
-function validatePhone(phone, countryCode, countryOptions = COUNTRY_OPTIONS) {
-  const country = getCountryConfig(countryCode, countryOptions);
-  const digits = sanitizePhoneInput(phone, countryCode, countryOptions);
+function validatePhone(phone, countryCode, countryOptions = []) {
+  const trimmedPhone = String(phone ?? "").trim();
+  const digits = sanitizePhoneInput(trimmedPhone, countryCode, countryOptions);
   if (!digits) return "Please enter your mobile number.";
-  if (digits.length !== country.maxDigits || !country.validate(digits)) {
-    return country.errorMessage;
+
+  const country = getCountryConfig(countryCode, countryOptions);
+  try {
+    const phoneNumber = parsePhoneNumberFromString(trimmedPhone, country.code);
+    if (!phoneNumber || !phoneNumber.isValid()) {
+      return `Please enter a valid mobile number for ${country.name}.`;
+    }
+    const nationalNumber = String(phoneNumber.nationalNumber ?? "").replace(/\D/g, "");
+    if (country.maxDigits && nationalNumber.length > country.maxDigits) {
+      return `Please enter a valid mobile number for ${country.name}.`;
+    }
+  } catch (error) {
+    return `Please enter a valid mobile number for ${country.name}.`;
   }
+
   return "";
 }
 
@@ -475,17 +483,21 @@ function validatePhone(phone, countryCode, countryOptions = COUNTRY_OPTIONS) {
 function inferCountryFromPhone(
   phone,
   savedCountryCode,
-  countryOptions = COUNTRY_OPTIONS,
+  countryOptions = [],
 ) {
-  if (savedCountryCode) {
-    return getCountryConfig(savedCountryCode.toUpperCase(), countryOptions)
-      .code;
+  const savedMatch = String(savedCountryCode ?? "").trim().toUpperCase();
+  if (savedMatch && countryOptions.some((country) => country.code === savedMatch)) {
+    return savedMatch;
   }
   const normalizedPhone = typeof phone === "string" ? phone.trim() : "";
-  if (normalizedPhone.startsWith("+971")) return "AE";
-  if (normalizedPhone.startsWith("+966")) return "SA";
-  if (normalizedPhone.startsWith("+91")) return "IN";
-  return countryOptions[0]?.code ?? COUNTRY_OPTIONS[0]?.code ?? "AE";
+  const dialMatchedCountry = [...countryOptions]
+    .sort((a, b) => String(b.dialCode ?? "").length - String(a.dialCode ?? "").length)
+    .find((country) => {
+      const dialCode = String(country.dialCode ?? "").replace(/\D/g, "");
+      const digits = normalizedPhone.replace(/\D/g, "");
+      return dialCode && digits.startsWith(dialCode);
+    });
+  return dialMatchedCountry?.code ?? countryOptions[0]?.code ?? COUNTRY_OPTIONS[0]?.code ?? "";
 }
 
 /**
@@ -497,16 +509,34 @@ function inferCountryFromPhone(
 function normalizeStoredPhone(
   phone,
   countryCode,
-  countryOptions = COUNTRY_OPTIONS,
+  countryOptions = [],
 ) {
   if (!phone) return "";
   const country = getCountryConfig(countryCode, countryOptions);
-  const digits = phone.replace(/\D/g, "");
-  const dialDigits = country.dialCode.replace("+", "");
-  if (digits.startsWith(dialDigits)) {
+  const digits = String(phone).replace(/\D/g, "");
+  const dialDigits = String(country.dialCode ?? "").replace(/\D/g, "");
+  if (dialDigits && digits.startsWith(dialDigits)) {
     return digits.slice(dialDigits.length).slice(-country.maxDigits);
   }
   return digits.slice(-country.maxDigits);
+}
+
+/**
+ * Keep country codes visible in the selector so store-configured markets
+ * are easier to distinguish in the extension UI.
+ *
+ * @param {CountryOption} country
+ * @returns {string}
+ */
+function formatCountryOptionLabel(country) {
+  const name = String(country?.name ?? "").trim();
+  const code = String(country?.code ?? "").trim().toUpperCase();
+
+  if (name && code && name.toUpperCase() !== code) {
+    return `${name} (${code})`;
+  }
+
+  return name || code;
 }
 
 /**
@@ -659,28 +689,6 @@ function buildLoyaltyMembershipData(country, canRedeem) {
   ];
 }
 
-/**
- * @param {ExtensionState} state
- * @param {CountryOption} selectedCountry
- * @returns {MetafieldRow[]}
- */
-function buildMetafieldRows(state, selectedCountry) {
-  return [
-    { label: "Email", value: state.email },
-    { label: "Country", value: selectedCountry.name },
-    {
-      label: "Phone",
-      value: state.phone ? `${selectedCountry.dialCode} ${state.phone}` : "",
-    },
-    { label: "Person QC Code", value: state.personQCCode },
-    { label: "Loyalty QC Code", value: state.loyaltyQCCode },
-    { label: "Tier", value: state.tier },
-    { label: "Redeem Point", value: state.redeemPoint || state.pointBalance },
-    { label: "Can Redeem", value: state.canRedeem === true ? "Yes" : "No" },
-    { label: "Loyalty Sync", value: state.loyaltySync === true ? "Yes" : "No" },
-  ].filter((item) => item.value);
-}
-
 function Extension() {
   const currentCustomerId =
     globalThis.shopify?.authenticatedAccount?.customer?.value?.id ?? "";
@@ -783,7 +791,7 @@ function Extension() {
       (c) => c.code === inferredCountryCode,
     )
       ? inferredCountryCode
-      : (availableCountries[0]?.code ?? COUNTRY_OPTIONS[0]?.code ?? "AE");
+      : (availableCountries[0]?.code ?? COUNTRY_OPTIONS[0]?.code ?? "");
 
     const phone = normalizeStoredPhone(
       rawPhone,
@@ -1605,7 +1613,6 @@ function Extension() {
     state.countryCode,
     state.countryOptions,
   );
-  const metafieldRows = buildMetafieldRows(state, selectedCountry);
   const shouldShowDashboard =
     state.screen === "success" ||
     (state.personQCCode && state.loyaltyQCCode &&
@@ -1728,7 +1735,8 @@ function Extension() {
     );
   }
 
-  const showCountrySelector = state.countryOptions.length > 0;
+  const showCountrySelector =
+    (state.shopCountries?.length ?? 0) > 0 || COUNTRY_OPTIONS.length > 0;
   const showPhoneInput = !state.hasSavedPhone;
 
   return (
@@ -1787,9 +1795,7 @@ function Extension() {
                           key={String(country.code)}
                           value={String(country.code)}
                         >
-                          {typeof country.name === "string"
-                            ? country.name
-                            : String(country.name)}
+                          {formatCountryOptionLabel(country)}
                         </s-option>
                       ))}
                     </s-select>

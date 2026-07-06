@@ -7,6 +7,10 @@ import {
   findFirstNestedValue,
   normalizeBooleanValue,
 } from "./qivos-utils.server";
+import {
+  getCountryCallingCode,
+  parsePhoneNumberFromString,
+} from "libphonenumber-js/min";
 
 const DEFAULT_METAFIELD_NAMESPACE = "custom";
 
@@ -241,17 +245,15 @@ function normalizeCountryCode(value: unknown): string | undefined {
 function getDialCodeByCountry(
   countryCode: string | undefined,
 ): string | undefined {
-  switch (countryCode?.toUpperCase()) {
-    case "AE":
-      return "+971";
-    case "SA":
-      return "+966";
-    case "IN":
-      return "+91";
-    case "CA":
-      return "+1";
-    default:
-      return undefined;
+  const normalizedCountryCode = countryCode?.toUpperCase();
+  if (!normalizedCountryCode) return undefined;
+
+  try {
+    return `+${getCountryCallingCode(
+      normalizedCountryCode as Parameters<typeof getCountryCallingCode>[0],
+    )}`;
+  } catch {
+    return undefined;
   }
 }
 
@@ -260,6 +262,16 @@ function normalizePhoneForMetafield(
   countryCode?: string,
 ): string | undefined {
   if (!phone) return undefined;
+
+  const parsedPhone = countryCode
+    ? parsePhoneNumberFromString(
+        phone,
+        countryCode as Parameters<typeof parsePhoneNumberFromString>[1],
+      )
+    : parsePhoneNumberFromString(phone);
+  if (parsedPhone?.nationalNumber) {
+    return String(parsedPhone.nationalNumber);
+  }
 
   const digits = phone.replace(/\D/g, "");
   if (!digits) return undefined;

@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "license": "UNLICENSED",
   "dependencies": {
+    "libphonenumber-js": "^1.12.0",
     "preact": "^10.10.x",
     "@preact/signals": "^2.3.x",
     "@shopify/ui-extensions": "~2026.4.0"
