@@ -39,14 +39,93 @@ export function getStoreCreditPermissionError(error: unknown): string | null {
   if (/Access denied for storeCreditAccounts field/i.test(message)) {
     return "Missing Shopify scope: read_store_credit_accounts";
   }
-  if (/Access denied for storeCreditAccountCredit field/i.test(message)) {
+  if (
+    /Access denied for storeCreditAccount(Credit|Debit) field/i.test(message)
+  ) {
     return "Missing Shopify scope: write_store_credit_account_transactions";
   }
 
   return null;
 }
 
+type StoreCreditTransactionData = {
+  data?: {
+    storeCreditAccountCredit?: {
+      storeCreditAccountTransaction?: {
+        id?: string;
+        amount?: {
+          amount?: string;
+          currencyCode?: string;
+        };
+        account?: {
+          id?: string;
+          balance?: {
+            amount?: string;
+            currencyCode?: string;
+          };
+        };
+      };
+      userErrors?: Array<{
+        field?: string[];
+        message?: string;
+      }>;
+    };
+    storeCreditAccountDebit?: {
+      storeCreditAccountTransaction?: {
+        id?: string;
+        amount?: {
+          amount?: string;
+          currencyCode?: string;
+        };
+        account?: {
+          id?: string;
+          balance?: {
+            amount?: string;
+            currencyCode?: string;
+          };
+        };
+      };
+      userErrors?: Array<{
+        field?: string[];
+        message?: string;
+      }>;
+    };
+  };
+  errors?: Array<{ message?: string }>;
+};
 
+type StoreCreditTransaction = NonNullable<
+  NonNullable<
+    NonNullable<StoreCreditTransactionData["data"]>["storeCreditAccountCredit"]
+  >["storeCreditAccountTransaction"]
+>;
+
+function assertNoGraphqlErrors(
+  responseData: StoreCreditTransactionData,
+  userErrors:
+    | Array<{
+        field?: string[];
+        message?: string;
+      }>
+    | undefined,
+) {
+  if (responseData.errors?.length) {
+    throw new Error(
+      responseData.errors
+        .map((error) => error.message)
+        .filter(Boolean)
+        .join(", "),
+    );
+  }
+
+  if (userErrors?.length) {
+    throw new Error(
+      userErrors
+        .map((error) => `${error.field?.join(".")}: ${error.message}`)
+        .join(", "),
+    );
+  }
+}
 
 export async function creditCustomerStoreCredit({
   shop,
@@ -190,101 +269,118 @@ export async function creditCustomerStoreCredit({
       parseFloat(accountNode?.balance?.amount ?? "0").toFixed(2),
     );
 
-    // Step 2: ADD the redeemed credit on top of the existing balance.
-    // `storeCreditAccountCredit` accepts either a store credit account id or the
-    // owning customer id, so a customer without an account yet still works
-    // (Shopify creates the account with this first credit).
-    const creditId = storeCreditAccountId ?? customerId;
+    // Step 2: Make the account balance match the current cart redemption.
+    // Shopify exposes credit/debit transactions, so replacing the checkout
+    // credit means applying only the difference from the current balance.
+    const balanceDelta = Number((creditAmount - previousBalance).toFixed(2));
+    const transactionId = storeCreditAccountId ?? customerId;
 
-    const creditResponse = await adminClient.graphql(
-      `#graphql
-        mutation StoreCreditAccountCredit(
-          $id: ID!
-          $creditInput: StoreCreditAccountCreditInput!
-        ) {
-          storeCreditAccountCredit(id: $id, creditInput: $creditInput) {
-            storeCreditAccountTransaction {
-              id
-              amount {
-                amount
-                currencyCode
-              }
-              account {
+    let creditData: StoreCreditTransactionData | undefined;
+    let transaction: StoreCreditTransaction | undefined;
+
+    if (balanceDelta > 0) {
+      const creditResponse = await adminClient.graphql(
+        `#graphql
+          mutation StoreCreditAccountCredit(
+            $id: ID!
+            $creditInput: StoreCreditAccountCreditInput!
+          ) {
+            storeCreditAccountCredit(id: $id, creditInput: $creditInput) {
+              storeCreditAccountTransaction {
                 id
-                balance {
+                amount {
                   amount
                   currencyCode
                 }
+                account {
+                  id
+                  balance {
+                    amount
+                    currencyCode
+                  }
+                }
+              }
+              userErrors {
+                field
+                message
               }
             }
-            userErrors {
-              field
-              message
-            }
           }
-        }
-      `,
-      {
-        variables: {
-          id: creditId,
-          creditInput: {
-            creditAmount: {
-              amount: toMoneyAmount(creditAmount),
-              currencyCode: storeCreditCurrencyCode,
+        `,
+        {
+          variables: {
+            id: transactionId,
+            creditInput: {
+              creditAmount: {
+                amount: toMoneyAmount(balanceDelta),
+                currencyCode: storeCreditCurrencyCode,
+              },
             },
           },
         },
-      },
-    );
-
-    const creditData = (await creditResponse.json()) as {
-      data?: {
-        storeCreditAccountCredit?: {
-          storeCreditAccountTransaction?: {
-            id?: string;
-            amount?: {
-              amount?: string;
-              currencyCode?: string;
-            };
-            account?: {
-              id?: string;
-              balance?: {
-                amount?: string;
-                currencyCode?: string;
-              };
-            };
-          };
-          userErrors?: Array<{
-            field?: string[];
-            message?: string;
-          }>;
-        };
-      };
-      errors?: Array<{ message?: string }>;
-    };
-
-    if (creditData.errors?.length) {
-      throw new Error(
-        creditData.errors
-          .map((error) => error.message)
-          .filter(Boolean)
-          .join(", "),
       );
+
+      creditData = (await creditResponse.json()) as StoreCreditTransactionData;
+      assertNoGraphqlErrors(
+        creditData,
+        creditData.data?.storeCreditAccountCredit?.userErrors,
+      );
+      transaction =
+        creditData.data?.storeCreditAccountCredit
+          ?.storeCreditAccountTransaction;
+    } else if (balanceDelta < 0) {
+      const debitResponse = await adminClient.graphql(
+        `#graphql
+          mutation StoreCreditAccountDebit(
+            $id: ID!
+            $debitInput: StoreCreditAccountDebitInput!
+          ) {
+            storeCreditAccountDebit(id: $id, debitInput: $debitInput) {
+              storeCreditAccountTransaction {
+                id
+                amount {
+                  amount
+                  currencyCode
+                }
+                account {
+                  id
+                  balance {
+                    amount
+                    currencyCode
+                  }
+                }
+              }
+              userErrors {
+                field
+                message
+              }
+            }
+          }
+        `,
+        {
+          variables: {
+            id: transactionId,
+            debitInput: {
+              debitAmount: {
+                amount: toMoneyAmount(Math.abs(balanceDelta)),
+                currencyCode: storeCreditCurrencyCode,
+              },
+            },
+          },
+        },
+      );
+
+      creditData = (await debitResponse.json()) as StoreCreditTransactionData;
+      assertNoGraphqlErrors(
+        creditData,
+        creditData.data?.storeCreditAccountDebit?.userErrors,
+      );
+      transaction =
+        creditData.data?.storeCreditAccountDebit?.storeCreditAccountTransaction;
     }
 
-    const userErrors =
-      creditData.data?.storeCreditAccountCredit?.userErrors ?? [];
-    if (userErrors.length > 0) {
-      throw new Error(
-        userErrors
-          .map((error) => `${error.field?.join(".")}: ${error.message}`)
-          .join(", "),
-      );
-    }
-
-    const transaction =
-      creditData.data?.storeCreditAccountCredit?.storeCreditAccountTransaction;
-    const finalBalance = transaction?.account?.balance?.amount;
+    const finalBalance =
+      transaction?.account?.balance?.amount ?? toMoneyAmount(previousBalance);
 
     if (redemptionKey) {
       await prisma.creditRedemption.update({
@@ -308,7 +404,7 @@ export async function creditCustomerStoreCredit({
       previousBalance,
       finalBalance,
       remainingRedeemPoints: 0,
-      data: creditData.data,
+      data: creditData?.data,
     };
   } catch (error) {
     const permissionError = getStoreCreditPermissionError(error);

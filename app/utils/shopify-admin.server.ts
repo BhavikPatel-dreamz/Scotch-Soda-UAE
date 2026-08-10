@@ -186,6 +186,10 @@ async function getValidAccessToken(shop: string): Promise<string> {
   });
 
   if (!session?.accessToken) {
+    const storeAccessToken = await getStoreAccessToken(shop);
+    if (storeAccessToken) {
+      return storeAccessToken;
+    }
     throw new Error(`Could not find a session for shop ${shop}`);
   }
 
