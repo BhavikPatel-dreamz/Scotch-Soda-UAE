@@ -7,6 +7,14 @@ type ShopifyTokenRefreshResponse = {
   refresh_token?: string;
 };
 
+async function getStoreAccessToken(shop: string): Promise<string | null> {
+  const store = await prisma.store.findUnique({
+    where: { shopDomain: shop },
+    select: { accessToken: true },
+  });
+  return store?.accessToken ?? null;
+}
+
 export type AdminGraphqlClient = {
   graphql: (
     query: string,
@@ -67,6 +75,14 @@ async function getValidatedSession(shop: string) {
   });
 
   if (!session?.accessToken) {
+    const storeAccessToken = await getStoreAccessToken(shop);
+    if (storeAccessToken) {
+      console.warn(
+        `[getValidatedSession] No offline session found for ${shop}, using stored store.accessToken instead`,
+      );
+      return { accessToken: storeAccessToken, refreshToken: null };
+    }
+
     console.error(`[getValidatedSession] No session found for ${shop}`);
     throw new Error(`Could not find a session for shop ${shop}`);
   }
