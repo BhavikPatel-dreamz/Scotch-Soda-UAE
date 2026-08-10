@@ -56,6 +56,25 @@ model QIVOSToken {
   updatedAt             DateTime  @updatedAt
 }
 
+model CreditRedemption {
+  id            String   @id @default(cuid())
+  shopDomain    String
+  customerId    String
+  redemptionKey String
+  redeemPoints  Float
+  creditAmount  Float
+  currencyCode  String?
+  transactionId String?
+  status        String   @default("PENDING") // PENDING | COMPLETED | FAILED
+  error         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([shopDomain, redemptionKey])
+  @@index([shopDomain])
+  @@index([customerId])
+}
+
 model Order {
   id                String   @id @default(cuid())
   shopDomain        String

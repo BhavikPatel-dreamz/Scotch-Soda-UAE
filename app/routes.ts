@@ -10,6 +10,7 @@ export default [
   route("auth/*", "routes/auth.$.tsx"),
   route("auth/login", "routes/auth.login/route.tsx"),
   route("api/backfill/stores", "routes/api.backfill.stores.tsx"),
+  route("api/cron/orders-sync", "routes/api.cron.orders-sync.tsx"),
   route(
     "customer-account/metafields",
     "routes/customer-account.metafields.tsx",
@@ -46,7 +47,10 @@ export default [
       "transactions/loyalty",
       "routes/api.proxy/transactions.loyalty.tsx",
     ),
-    route("customerCredit", "routes/api.proxy/customerCredit.tsx"),
+    route(
+      "redeem-points-to-credit",
+      "routes/api.proxy/redeem-points-to-credit.tsx",
+    ),
     route("pointlogs/reserve-points","routes/api.proxy/pointlogs.reserve-points.tsx")
   ]),
   // Index route

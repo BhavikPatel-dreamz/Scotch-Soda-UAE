@@ -1,4 +1,5 @@
 import { getAdminGraphqlClient } from "./shopify-admin.server";
+import prisma from "../db.server";
 
 const POINTS_TO_CREDIT_RATE = 0.1836;
 
@@ -6,6 +7,12 @@ export type CustomerCreditInput = {
   shop: string;
   customerId: string;
   redeemPoints: number;
+  /**
+   * Optional idempotency key (e.g. the order number). When provided, the same
+   * key is credited at most once — a duplicate request returns the prior
+   * result instead of adding the credit again.
+   */
+  redemptionKey?: string;
 };
 
 export type CustomerCreditResult = {
@@ -45,6 +52,7 @@ export async function creditCustomerStoreCredit({
   shop,
   customerId,
   redeemPoints,
+  redemptionKey,
 }: CustomerCreditInput): Promise<CustomerCreditResult> {
   const adminClient = await getAdminGraphqlClient(shop);
   const creditAmount = Number(
@@ -55,6 +63,56 @@ export async function creditCustomerStoreCredit({
     throw new Error(
       `Invalid credit amount derived from redeem points: ${redeemPoints}`,
     );
+  }
+
+  // Idempotency: claim the redemption key before touching Shopify. The unique
+  // constraint on [shopDomain, redemptionKey] guarantees only one request wins;
+  // any concurrent or repeated request short-circuits here.
+  if (redemptionKey) {
+    const existing = await prisma.creditRedemption.findUnique({
+      where: {
+        shopDomain_redemptionKey: { shopDomain: shop, redemptionKey },
+      },
+    });
+
+    if (existing && existing.status !== "FAILED") {
+      return {
+        success: existing.status === "COMPLETED",
+        skipped: true,
+        skipReason:
+          existing.status === "COMPLETED"
+            ? "Redemption already processed"
+            : "Redemption already in progress",
+        shop,
+        customerId,
+        redeemPoints,
+        creditAmount: existing.creditAmount,
+        finalBalance: undefined,
+        remainingRedeemPoints: 0,
+      };
+    }
+
+    // Claim (or re-claim a previously failed) key.
+    await prisma.creditRedemption.upsert({
+      where: {
+        shopDomain_redemptionKey: { shopDomain: shop, redemptionKey },
+      },
+      create: {
+        shopDomain: shop,
+        customerId,
+        redemptionKey,
+        redeemPoints,
+        creditAmount,
+        status: "PENDING",
+      },
+      update: {
+        customerId,
+        redeemPoints,
+        creditAmount,
+        status: "PENDING",
+        error: null,
+      },
+    });
   }
 
   try {
@@ -104,133 +162,39 @@ export async function creditCustomerStoreCredit({
       );
     }
 
-    const response = await adminClient.graphql(`
-  query {
-    shop {
-      currencyCode
-      currencyFormats {
-        moneyFormat
-        moneyWithCurrencyFormat
+    const shopResponse = await adminClient.graphql(`#graphql
+      query ShopCurrency {
+        shop {
+          currencyCode
+        }
       }
-    }
-  }
-`);
+    `);
 
-    const { data } = await response.json();
+    const shopData = (await shopResponse.json()) as {
+      data?: { shop?: { currencyCode?: string } };
+    };
+
     const accountNode =
       balanceData.data?.customer?.storeCreditAccounts?.nodes?.[0];
 
     const storeCreditAccountId = accountNode?.id;
     const storeCreditCurrencyCode =
-      accountNode?.balance?.currencyCode || data.shop.currencyCode;
-    const previousBalance = parseFloat(accountNode?.balance?.amount ?? "0");
-    const previousBalanceAmount = Number(previousBalance.toFixed(2));
-    const targetBalance = creditAmount;
-    const balanceDelta = Number(
-      (targetBalance - previousBalanceAmount).toFixed(2),
+      accountNode?.balance?.currencyCode ?? shopData.data?.shop?.currencyCode;
+
+    if (!storeCreditCurrencyCode) {
+      throw new Error("Unable to determine store credit currency code");
+    }
+
+    // Balance before this redemption (for reporting only).
+    const previousBalance = Number(
+      parseFloat(accountNode?.balance?.amount ?? "0").toFixed(2),
     );
 
-    if (balanceDelta === 0) {
-      return {
-        success: true,
-        skipped: true,
-        skipReason: "Store credit already matches redeem points",
-        shop,
-        customerId,
-        redeemPoints,
-        creditAmount,
-        previousBalance,
-        finalBalance: accountNode?.balance?.amount,
-        remainingRedeemPoints: redeemPoints,
-        data: balanceData.data,
-      };
-    }
-
+    // Step 2: ADD the redeemed credit on top of the existing balance.
+    // `storeCreditAccountCredit` accepts either a store credit account id or the
+    // owning customer id, so a customer without an account yet still works
+    // (Shopify creates the account with this first credit).
     const creditId = storeCreditAccountId ?? customerId;
-
-    if (balanceDelta < 0) {
-      if (!storeCreditAccountId) {
-        throw new Error("Store credit account ID not found, cannot debit.");
-      }
-
-      const removeResponse = await adminClient.graphql(
-        `#graphql
-          mutation RemoveOldCredit(
-            $id: ID!
-            $debitInput: StoreCreditAccountDebitInput!
-          ) {
-            storeCreditAccountDebit(id: $id, debitInput: $debitInput) {
-              storeCreditAccountTransaction {
-                id
-              }
-              userErrors {
-                field
-                message
-              }
-            }
-          }
-        `,
-        {
-          variables: {
-            id: storeCreditAccountId,
-            debitInput: {
-              debitAmount: {
-                amount: toMoneyAmount(Math.abs(balanceDelta)),
-                currencyCode: storeCreditCurrencyCode,
-              },
-            },
-          },
-        },
-      );
-
-      const removeData = (await removeResponse.json()) as {
-        data?: {
-          storeCreditAccountDebit?: {
-            userErrors?: Array<{
-              field?: string[];
-              message?: string;
-            }>;
-          };
-        };
-        errors?: Array<{ message?: string }>;
-      };
-
-      if (removeData.errors?.length) {
-        throw new Error(
-          removeData.errors
-            .map((error) => error.message)
-            .filter(Boolean)
-            .join(", "),
-        );
-      }
-
-      const removeErrors =
-        removeData.data?.storeCreditAccountDebit?.userErrors ?? [];
-      if (removeErrors.length > 0) {
-        throw new Error(
-          removeErrors
-            .map((error) => `${error.field?.join(".")}: ${error.message}`)
-            .join(", "),
-        );
-      }
-    }
-
-    // Step 3: Add/credit only the net delta amount
-    const creditAmountForMutation = balanceDelta > 0 ? balanceDelta : 0;
-
-    if (creditAmountForMutation === 0) {
-      return {
-        success: true,
-        shop,
-        customerId,
-        redeemPoints,
-        creditAmount,
-        previousBalance,
-        finalBalance: toMoneyAmount(targetBalance),
-        remainingRedeemPoints: 0,
-        data: undefined,
-      };
-    }
 
     const creditResponse = await adminClient.graphql(
       `#graphql
@@ -265,7 +229,7 @@ export async function creditCustomerStoreCredit({
           id: creditId,
           creditInput: {
             creditAmount: {
-              amount: toMoneyAmount(creditAmountForMutation),
+              amount: toMoneyAmount(creditAmount),
               currencyCode: storeCreditCurrencyCode,
             },
           },
@@ -318,9 +282,22 @@ export async function creditCustomerStoreCredit({
       );
     }
 
-    const finalBalance =
-      creditData.data?.storeCreditAccountCredit?.storeCreditAccountTransaction
-        ?.account?.balance?.amount;
+    const transaction =
+      creditData.data?.storeCreditAccountCredit?.storeCreditAccountTransaction;
+    const finalBalance = transaction?.account?.balance?.amount;
+
+    if (redemptionKey) {
+      await prisma.creditRedemption.update({
+        where: {
+          shopDomain_redemptionKey: { shopDomain: shop, redemptionKey },
+        },
+        data: {
+          status: "COMPLETED",
+          currencyCode: transaction?.amount?.currencyCode,
+          transactionId: transaction?.id,
+        },
+      });
+    }
 
     return {
       success: true,
@@ -335,9 +312,22 @@ export async function creditCustomerStoreCredit({
     };
   } catch (error) {
     const permissionError = getStoreCreditPermissionError(error);
-    throw new Error(
+    const message =
       permissionError ??
-        (error instanceof Error ? error.message : "Unknown error"),
-    );
+      (error instanceof Error ? error.message : "Unknown error");
+
+    // Release the claim so the redemption can be retried with the same key.
+    if (redemptionKey) {
+      await prisma.creditRedemption
+        .update({
+          where: {
+            shopDomain_redemptionKey: { shopDomain: shop, redemptionKey },
+          },
+          data: { status: "FAILED", error: message },
+        })
+        .catch(() => {});
+    }
+
+    throw new Error(message);
   }
 }

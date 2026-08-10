@@ -16,6 +16,8 @@ type CustomerCreditBody = {
   shop?: string;
   customerId?: string;
   redeemPoints?: number | string;
+  redemptionKey?: string;
+  orderNumber?: string;
 };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -88,6 +90,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const customerId = body.customerId?.trim();
   const customerGid = toShopifyCustomerGid(customerId);
   const redeemPoints = toPositiveNumber(body.redeemPoints);
+  const redemptionKey =
+    body.redemptionKey?.trim() || body.orderNumber?.trim() || undefined;
 
   if (!shop || !customerGid || redeemPoints === null) {
     return new Response(
@@ -109,6 +113,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       shop,
       customerId: customerGid,
       redeemPoints,
+      redemptionKey,
     });
 
     return new Response(

@@ -54,6 +54,7 @@
  * @property {boolean} initialCheckDone
  * @property {InactiveMembership[]} inactiveMemberships
  * @property {CountryOption[]} countryOptions
+ * @property {CountryOption[]} shopCountries
  */
 
 /**
@@ -110,6 +111,10 @@
  */
 
 /**
+ * @typedef {Record<string, unknown>} GenericObject
+ */
+
+/**
  * @typedef {Object} FetchMetafieldsResult
  * @property {boolean} linked
  * @property {boolean} loyaltySync
@@ -126,7 +131,13 @@
 import "@shopify/ui-extensions/preact";
 import { render } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { getCountryCallingCode, parsePhoneNumberFromString } from "libphonenumber-js/min";
+import {
+  getCountryCallingCode,
+  parsePhoneNumberFromString,
+} from "libphonenumber-js/min";
+/**
+ * @typedef {import("libphonenumber-js").CountryCode} CountryCode
+ */
 
 const APP_URL = "https://scotch-soda-uae.vercel.app";
 const CUSTOMER_METAFIELDS_ENDPOINT = `${APP_URL}/customer-account/metafields`;
@@ -175,10 +186,21 @@ function getDialCodeForCountry(code) {
   if (!normalizedCode) return "";
 
   try {
-    return `+${getCountryCallingCode(normalizedCode)}`;
+    // @ts-ignore
+    return `+${getCountryCallingCode(toCountryCode(normalizedCode))}`;
   } catch {
     return "";
   }
+}
+
+/**
+ * @param {string} value
+ * @returns {CountryCode | undefined}
+ */
+function toCountryCode(value) {
+  const normalized = String(value ?? "").trim().toUpperCase();
+  if (!normalized) return undefined;
+  return /** @type {CountryCode} */ (normalized);
 }
 
 function createEmptyCountryOption(code = "") {
@@ -314,13 +336,16 @@ function mergeCountryOptions(marketCountries, shopCountryCode) {
 }
 
 /**
- * @param {Array<Object>|undefined} raw
+ * @param {Array<GenericObject>|undefined} raw
  * @returns {CountryOption[]}
  */
 function normalizeAvailableCountries(raw) {
   if (!Array.isArray(raw) || raw.length === 0) return COUNTRY_OPTIONS;
 
-  // @ts-ignore
+  /**
+   * @param {unknown} value
+   * @returns {string}
+   */
   const normalizeValue = (value) => {
     if (
       typeof value === "string" ||
@@ -333,7 +358,7 @@ function normalizeAvailableCountries(raw) {
       return value.map(normalizeValue).filter(Boolean).join(" ");
     }
     if (value && typeof value === "object") {
-      const objectValue = value;
+      const objectValue = /** @type {GenericObject} */ (value);
       return normalizeValue(
         objectValue.name ??
         objectValue.label ??
@@ -348,7 +373,7 @@ function normalizeAvailableCountries(raw) {
   const options = raw
     .map((item) => {
       if (!item || typeof item !== "object") return null;
-      const itemObj = item;
+      const itemObj = /** @type {GenericObject} */ (item);
 
       const name = normalizeValue(
         // @ts-ignore
@@ -459,8 +484,14 @@ function validatePhone(phone, countryCode, countryOptions = []) {
 
   const country = getCountryConfig(countryCode, countryOptions);
   try {
-    const phoneNumber = parsePhoneNumberFromString(trimmedPhone, country.code);
-    if (!phoneNumber || !phoneNumber.isValid()) {
+    const phoneNumber = parsePhoneNumberFromString(
+      trimmedPhone,
+      toCountryCode(country.code),
+    );
+    if (!phoneNumber) {
+      return `Please enter a valid mobile number for ${country.name}.`;
+    }
+    if (!phoneNumber.isValid()) {
       return `Please enter a valid mobile number for ${country.name}.`;
     }
     const nationalNumber = String(phoneNumber.nationalNumber ?? "").replace(/\D/g, "");
@@ -1195,9 +1226,9 @@ function Extension() {
         // @ts-ignore
         loyaltyQCCode: checkResult.loyaltyQCCode || prev.loyaltyQCCode,
         // @ts-ignore
-        pointBalance: checkResult.pointBalance || prev.pointBalance,
+        pointBalance: checkResult.pointBalance ?? prev.pointBalance,
         // @ts-ignore
-        redeemPoint: checkResult.redeemPoint || prev.redeemPoint,
+        redeemPoint: checkResult.redeemPoint ?? prev.redeemPoint,
         // @ts-ignore
         canRedeem: checkResult.canRedeem ?? prev.canRedeem,
         // @ts-ignore
@@ -1298,7 +1329,7 @@ function Extension() {
         loyaltyQCCode: refreshed.loyaltyQCCode || prev.loyaltyQCCode,
         pointBalance: refreshed.pointBalance || prev.pointBalance,
         // @ts-ignore
-        redeemPoint: refreshed.redeemPoint || refreshed.pointBalance || prev.redeemPoint,
+        redeemPoint: refreshed.redeemPoint ?? refreshed.pointBalance ?? prev.redeemPoint,
         canRedeem: refreshed.canRedeem ?? prev.canRedeem,
         tier: refreshed.tier || prev.tier,
       }));

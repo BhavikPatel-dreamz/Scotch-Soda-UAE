@@ -18,7 +18,6 @@ import {
   fetchShopifyCustomerProfile,
   qivosPersonNeedsShopifyProfileBackfill,
 } from "../utils/qivos-person-backfill.server";
-import { creditCustomerStoreCredit } from "app/utils/customer-credit.server";
 import {
   collectInactiveLoyaltyMemberships,
 } from "../utils/customer-account-loyalty.server";
@@ -945,8 +944,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       freshPointBalance !== metafields.redeemPoint;
 
     const canRedeemChanged = freshCanRedeem !== (metafields.canRedeem ?? false);
-    const shouldConvertToCredit =
-      freshCanRedeem === true && !!freshPointBalance && pointBalanceChanged;
 
     const tierChanged =
       freshTier !== undefined && freshTier !== metafields.tier;
@@ -1000,7 +997,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       }
     }
 
-    if (shouldUpdateMetafields && !shouldConvertToCredit && !loyaltyMetafieldsSaved) {
+    if (shouldUpdateMetafields && !loyaltyMetafieldsSaved) {
       try {
         await saveCustomerIdentityMetafields({
           shop,
@@ -1013,84 +1010,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         loyaltyMetafieldsSaved = true;
       } catch (error) {
         console.warn("Failed to save loyalty metafields:", error);
-      }
-    }
-
-    // Credit store balance only when:
-    // 1. canRedeem is true
-    // 2. We have a fresh point balance
-    // 3. The balance actually changed from what's stored
-    if (shouldConvertToCredit) {
-      try {
-        const redeemPoints = Number(freshPointBalance);
-        if (!Number.isFinite(redeemPoints) || redeemPoints <= 0) {
-          throw new Error(
-            `Invalid redeem points value: ${freshPointBalance}`,
-          );
-        }
-
-        const creditResult = await creditCustomerStoreCredit({
-          shop,
-          customerId,
-          redeemPoints,
-        });
-
-        if (creditResult.skipped) {
-          try {
-            await saveCustomerIdentityMetafields({
-              shop,
-              customerId,
-              values: {
-                redeemPoint,
-                canRedeem: freshCanRedeem,
-              },
-            });
-            loyaltyMetafieldsSaved = true;
-          } catch (error) {
-            console.warn(
-              "Failed to save loyalty metafields after skipped credit:",
-              error,
-            );
-          }
-        } else {
-          const remainingRedeemPoints =
-            creditResult.remainingRedeemPoints ?? 0;
-          redeemPoint = String(remainingRedeemPoints);
-
-          try {
-            await saveCustomerIdentityMetafields({
-              shop,
-              customerId,
-              values: {
-                redeemPoint,
-                canRedeem: freshCanRedeem,
-              },
-            });
-            loyaltyMetafieldsSaved = true;
-          } catch (error) {
-            console.warn(
-              "Failed to save post-conversion loyalty metafields:",
-              error,
-            );
-          }
-        }
-      } catch (error) {
-        console.warn("Failed to credit customer store balance:", error);
-      }
-    }
-
-    if (shouldUpdateMetafields && !loyaltyMetafieldsSaved) {
-      try {
-        await saveCustomerIdentityMetafields({
-          shop,
-          customerId,
-          values: {
-            redeemPoint,
-            canRedeem: freshCanRedeem,
-          },
-        });
-      } catch (error) {
-        console.warn("Failed to save loyalty metafields on fallback:", error);
       }
     }
 
