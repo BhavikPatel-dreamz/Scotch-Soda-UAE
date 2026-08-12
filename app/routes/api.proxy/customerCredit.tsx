@@ -16,6 +16,8 @@ type CustomerCreditBody = {
   shop?: string;
   customerId?: string;
   redeemPoints?: number | string;
+  remove?: boolean;
+  action?: string;
   redemptionKey?: string;
   orderNumber?: string;
 };
@@ -90,14 +92,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const customerId = body.customerId?.trim();
   const customerGid = toShopifyCustomerGid(customerId);
   const rawRedeemPoints = body.redeemPoints;
+  const isRemoveRequest = body.remove === true || body.action === "remove" || body.action === "reset";
   const redeemPoints =
     rawRedeemPoints === undefined || rawRedeemPoints === null || rawRedeemPoints === ""
       ? 0
       : toPositiveNumber(rawRedeemPoints);
+  const effectiveRedeemPoints = isRemoveRequest ? 0 : redeemPoints;
   const redemptionKey =
     body.redemptionKey?.trim() || body.orderNumber?.trim() || undefined;
 
-  if (!shop || !customerGid || redeemPoints === null) {
+  if (!shop || !customerGid || effectiveRedeemPoints === null) {
     return new Response(
       JSON.stringify({
         error: "shop, customerId, and redeemPoints are required",
@@ -116,7 +120,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const result = await creditCustomerStoreCredit({
       shop,
       customerId: customerGid,
-      redeemPoints,
+      redeemPoints: effectiveRedeemPoints,
+      remove: isRemoveRequest,
       redemptionKey,
     });
 

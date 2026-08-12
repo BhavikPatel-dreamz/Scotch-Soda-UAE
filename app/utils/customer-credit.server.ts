@@ -7,6 +7,7 @@ export type CustomerCreditInput = {
   shop: string;
   customerId: string;
   redeemPoints: number;
+  remove?: boolean;
   /**
    * Optional idempotency key (e.g. the order number). When provided, the same
    * key is credited at most once — a duplicate request returns the prior
@@ -131,13 +132,16 @@ export async function creditCustomerStoreCredit({
   shop,
   customerId,
   redeemPoints,
+  remove,
   redemptionKey,
 }: CustomerCreditInput): Promise<CustomerCreditResult> {
   if (!Number.isFinite(redeemPoints) || redeemPoints < 0) {
     throw new Error(`Invalid redeem points value: ${redeemPoints}`);
   }
 
-  if (redeemPoints === 0) {
+  const isZeroReset = remove === true || redeemPoints === 0;
+
+  if (!remove && redeemPoints === 0) {
     return {
       success: true,
       shop,
@@ -149,11 +153,11 @@ export async function creditCustomerStoreCredit({
   }
 
   const adminClient = await getAdminGraphqlClient(shop);
-  const creditAmount = Number(
-    (redeemPoints * POINTS_TO_CREDIT_RATE).toFixed(2),
-  );
+  const creditAmount = isZeroReset
+    ? 0
+    : Number((redeemPoints * POINTS_TO_CREDIT_RATE).toFixed(2));
 
-  if (!Number.isFinite(creditAmount) || creditAmount <= 0) {
+  if (!isZeroReset && (!Number.isFinite(creditAmount) || creditAmount <= 0)) {
     throw new Error(
       `Invalid credit amount derived from redeem points: ${redeemPoints}`,
     );
