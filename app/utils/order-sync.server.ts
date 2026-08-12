@@ -32,8 +32,7 @@ type ReservePointsBody = {
   reservationType: string;
 };
 
-const QIVOS_RESERVE_POINTS_URL =
-  `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/pointlogs/reserve-points`;
+const QIVOS_RESERVE_POINTS_URL = `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/pointlogs/reserve-points`;
 
 function asString(value: unknown): string | undefined {
   if (typeof value === "string" && value.trim()) {
@@ -157,10 +156,14 @@ function extractCustomerId(payload: ShopifyOrderPayload): string | undefined {
     return undefined;
   }
 
-  return toShopifyCustomerGid(asString((customer as Record<string, unknown>).id));
+  return toShopifyCustomerGid(
+    asString((customer as Record<string, unknown>).id),
+  );
 }
 
-function extractCustomerEmail(payload: ShopifyOrderPayload): string | undefined {
+function extractCustomerEmail(
+  payload: ShopifyOrderPayload,
+): string | undefined {
   return asString(payload.email) ?? undefined;
 }
 
@@ -215,7 +218,6 @@ export function normalizeWebhookTopic(topic: string): string {
 export function isOrderWebhookTopic(topic: string, expected: string): boolean {
   return normalizeWebhookTopic(topic) === expected;
 }
-
 
 async function reserveQivosPoints({
   loyaltyMemberCode,
@@ -279,7 +281,8 @@ export async function upsertShopifyOrderFromWebhook({
     asMoneyString(payload.current_subtotal_price) ??
     asMoneyString(payload.subtotal_price);
   const totalPrice =
-    asMoneyString(payload.current_total_price) ?? asMoneyString(payload.total_price);
+    asMoneyString(payload.current_total_price) ??
+    asMoneyString(payload.total_price);
   const discountTotal = asMoneyString(payload.total_discounts);
   const financialStatus = asString(payload.financial_status);
   const fulfillmentStatus = asString(payload.fulfillment_status);
@@ -307,7 +310,8 @@ export async function upsertShopifyOrderFromWebhook({
       lastWebhookTopic: normalizedTopic,
       erpStatus: deriveErpStatus(normalizedTopic),
       loyaltyStatus: deriveLoyaltyStatus(normalizedTopic),
-      paidAt: normalizedTopic === ORDER_WEBHOOK_TOPICS.paid ? paidAt : undefined,
+      paidAt:
+        normalizedTopic === ORDER_WEBHOOK_TOPICS.paid ? paidAt : undefined,
       rawPayload,
     },
     update: {
@@ -324,7 +328,8 @@ export async function upsertShopifyOrderFromWebhook({
       lastWebhookTopic: normalizedTopic,
       erpStatus: deriveErpStatus(normalizedTopic),
       loyaltyStatus: deriveLoyaltyStatus(normalizedTopic),
-      paidAt: normalizedTopic === ORDER_WEBHOOK_TOPICS.paid ? paidAt : undefined,
+      paidAt:
+        normalizedTopic === ORDER_WEBHOOK_TOPICS.paid ? paidAt : undefined,
       rawPayload,
     },
   });
@@ -373,11 +378,11 @@ export async function upsertShopifyOrderFromWebhook({
         const reserveResponse = await reserveQivosPoints({
           loyaltyMemberCode,
           orderNumber: orderNumber ?? shopifyOrderId,
-          pointsToReserve: pointsToReserve*10,
+          pointsToReserve: pointsToReserve * 10,
           reservationType: "REDEEM",
         });
 
-        const reservedPoints = pointsToReserve
+        const reservedPoints = pointsToReserve;
         const updatedRedeemPoint = toUpdatedRedeemPoint(
           customerMetafields.redeemPoint,
           reservedPoints,
@@ -429,15 +434,17 @@ export async function upsertShopifyOrderFromWebhook({
 
   return order;
 }
- 
-export function toPositiveNumber(value: number | string | undefined): number | null {
-  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+
+export function toPositiveNumber(
+  value: number | string | undefined,
+): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
     return value;
   }
 
   if (typeof value === "string") {
     const parsed = Number(value);
-    if (Number.isFinite(parsed) && parsed > 0) {
+    if (Number.isFinite(parsed) && parsed >= 0) {
       return parsed;
     }
   }

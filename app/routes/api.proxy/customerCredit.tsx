@@ -89,7 +89,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const shop = body.shop ?? proxyContext?.shop ?? (await resolveCurrentShop(request, body as Record<string, unknown>));
   const customerId = body.customerId?.trim();
   const customerGid = toShopifyCustomerGid(customerId);
-  const redeemPoints = toPositiveNumber(body.redeemPoints);
+  const rawRedeemPoints = body.redeemPoints;
+  const redeemPoints =
+    rawRedeemPoints === undefined || rawRedeemPoints === null || rawRedeemPoints === ""
+      ? 0
+      : toPositiveNumber(rawRedeemPoints);
   const redemptionKey =
     body.redemptionKey?.trim() || body.orderNumber?.trim() || undefined;
 

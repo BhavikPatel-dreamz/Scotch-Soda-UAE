@@ -133,6 +133,21 @@ export async function creditCustomerStoreCredit({
   redeemPoints,
   redemptionKey,
 }: CustomerCreditInput): Promise<CustomerCreditResult> {
+  if (!Number.isFinite(redeemPoints) || redeemPoints < 0) {
+    throw new Error(`Invalid redeem points value: ${redeemPoints}`);
+  }
+
+  if (redeemPoints === 0) {
+    return {
+      success: true,
+      shop,
+      customerId,
+      redeemPoints: 0,
+      creditAmount: 0,
+      remainingRedeemPoints: 0,
+    };
+  }
+
   const adminClient = await getAdminGraphqlClient(shop);
   const creditAmount = Number(
     (redeemPoints * POINTS_TO_CREDIT_RATE).toFixed(2),
