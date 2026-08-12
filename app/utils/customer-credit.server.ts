@@ -173,7 +173,7 @@ export async function creditCustomerStoreCredit({
       },
     });
 
-    if (existing && existing.status !== "FAILED") {
+    if (existing && existing.status !== "FAILED" && !remove) {
       return {
         success: existing.status === "COMPLETED",
         skipped: true,
@@ -190,7 +190,9 @@ export async function creditCustomerStoreCredit({
       };
     }
 
-    // Claim (or re-claim a previously failed) key.
+    // Claim (or re-claim a previously failed) key. Remove/reset requests must
+    // still be allowed through even when the key was used before, because the
+    // business rule is to set the Shopify credit balance back to zero.
     await prisma.creditRedemption.upsert({
       where: {
         shopDomain_redemptionKey: { shopDomain: shop, redemptionKey },
