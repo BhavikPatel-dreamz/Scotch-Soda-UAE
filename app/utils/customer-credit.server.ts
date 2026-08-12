@@ -7,6 +7,7 @@ export type CustomerCreditInput = {
   shop: string;
   customerId: string;
   redeemPoints: number;
+  remove?: boolean;
   /**
    * Optional idempotency key (e.g. the order number). When provided, the same
    * key is credited at most once — a duplicate request returns the prior
@@ -131,13 +132,39 @@ export async function creditCustomerStoreCredit({
   shop,
   customerId,
   redeemPoints,
+  remove,
   redemptionKey,
 }: CustomerCreditInput): Promise<CustomerCreditResult> {
   if (!Number.isFinite(redeemPoints) || redeemPoints < 0) {
     throw new Error(`Invalid redeem points value: ${redeemPoints}`);
   }
 
-  if (redeemPoints === 0) {
+  let existingReversal: {
+    status: string;
+    redeemPoints: number;
+    creditAmount: number;
+  } | null = null;
+
+  if (redemptionKey) {
+    existingReversal = await prisma.creditRedemption.findUnique({
+      where: {
+        shopDomain_redemptionKey: { shopDomain: shop, redemptionKey },
+      },
+      select: {
+        status: true,
+        redeemPoints: true,
+        creditAmount: true,
+      },
+    });
+  }
+
+  const isRemovalRequest =
+    remove === true ||
+    (Boolean(redemptionKey) &&
+      Boolean(existingReversal) &&
+      existingReversal!.status === "COMPLETED");
+
+  if (redeemPoints === 0 && !isRemovalRequest) {
     return {
       success: true,
       shop,
@@ -149,11 +176,18 @@ export async function creditCustomerStoreCredit({
   }
 
   const adminClient = await getAdminGraphqlClient(shop);
-  const creditAmount = Number(
+  const calculatedCreditAmount = Number(
     (redeemPoints * POINTS_TO_CREDIT_RATE).toFixed(2),
   );
+  const creditAmount = isRemovalRequest ? 0 : calculatedCreditAmount;
 
-  if (!Number.isFinite(creditAmount) || creditAmount <= 0) {
+  if (!Number.isFinite(calculatedCreditAmount) || calculatedCreditAmount < 0) {
+    throw new Error(
+      `Invalid credit amount derived from redeem points: ${redeemPoints}`,
+    );
+  }
+
+  if (!isRemovalRequest && calculatedCreditAmount <= 0) {
     throw new Error(
       `Invalid credit amount derived from redeem points: ${redeemPoints}`,
     );
@@ -163,24 +197,22 @@ export async function creditCustomerStoreCredit({
   // constraint on [shopDomain, redemptionKey] guarantees only one request wins;
   // any concurrent or repeated request short-circuits here.
   if (redemptionKey) {
-    const existing = await prisma.creditRedemption.findUnique({
-      where: {
-        shopDomain_redemptionKey: { shopDomain: shop, redemptionKey },
-      },
-    });
-
-    if (existing && existing.status !== "FAILED") {
+    if (
+      existingReversal &&
+      existingReversal.status !== "FAILED" &&
+      !isRemovalRequest
+    ) {
       return {
-        success: existing.status === "COMPLETED",
+        success: existingReversal.status === "COMPLETED",
         skipped: true,
         skipReason:
-          existing.status === "COMPLETED"
+          existingReversal.status === "COMPLETED"
             ? "Redemption already processed"
             : "Redemption already in progress",
         shop,
         customerId,
         redeemPoints,
-        creditAmount: existing.creditAmount,
+        creditAmount: existingReversal.creditAmount,
         finalBalance: undefined,
         remainingRedeemPoints: 0,
       };
@@ -287,7 +319,8 @@ export async function creditCustomerStoreCredit({
     // Step 2: Make the account balance match the current cart redemption.
     // Shopify exposes credit/debit transactions, so replacing the checkout
     // credit means applying only the difference from the current balance.
-    const balanceDelta = Number((creditAmount - previousBalance).toFixed(2));
+    const targetBalance = isRemovalRequest ? 0 : creditAmount;
+    const balanceDelta = Number((targetBalance - previousBalance).toFixed(2));
     const transactionId = storeCreditAccountId ?? customerId;
 
     let creditData: StoreCreditTransactionData | undefined;

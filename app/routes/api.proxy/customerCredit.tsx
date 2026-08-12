@@ -16,6 +16,8 @@ type CustomerCreditBody = {
   shop?: string;
   customerId?: string;
   redeemPoints?: number | string;
+  remove?: boolean;
+  action?: "apply" | "remove";
   redemptionKey?: string;
   orderNumber?: string;
 };
@@ -90,10 +92,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const customerId = body.customerId?.trim();
   const customerGid = toShopifyCustomerGid(customerId);
   const rawRedeemPoints = body.redeemPoints;
+  const isRemoveRequest =
+    body.remove === true || body.action === "remove";
   const redeemPoints =
     rawRedeemPoints === undefined || rawRedeemPoints === null || rawRedeemPoints === ""
       ? 0
       : toPositiveNumber(rawRedeemPoints);
+
+  if (isRemoveRequest && redeemPoints !== null && redeemPoints > 0) {
+    // Remove requests are intentionally reset-to-zero operations; do not
+    // translate the prior redemption amount back into a positive Shopify credit.
+  }
   const redemptionKey =
     body.redemptionKey?.trim() || body.orderNumber?.trim() || undefined;
 
@@ -116,7 +125,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const result = await creditCustomerStoreCredit({
       shop,
       customerId: customerGid,
-      redeemPoints,
+      redeemPoints: isRemoveRequest ? 0 : redeemPoints,
+      remove: isRemoveRequest,
       redemptionKey,
     });
 
