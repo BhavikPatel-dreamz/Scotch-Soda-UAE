@@ -1043,6 +1043,42 @@ const inactiveMembershipSyncResults: any[] = [];
     shop,
   });
 
+  // Instead of auto-creating a QIVOS person, check whether the phone
+  // number (from QIVOS or the request) is already associated with a
+  // different Shopify customer in this shop. If so, return an alert
+  // so the caller can decide what to do. Do NOT create automatically.
+  let phoneConflict: Record<string, unknown> | undefined = undefined;
+  if (shop && shopifyCustomer && requestBody.customerId) {
+    const phoneToCheck =
+      qivosPhone ?? (identifier.type === "phone" ? identifier.value : undefined);
+
+    if (phoneToCheck) {
+      try {
+        const adminClient = await getAdminGraphqlClient(shop);
+        const foundCustomer = await findShopifyCustomer(adminClient, {
+          type: "phone",
+          value: phoneToCheck,
+        });
+
+        if (foundCustomer && foundCustomer.id !== shopifyCustomer.id) {
+          phoneConflict = {
+            conflict: true,
+            message:
+              "Phone number already belongs to a different Shopify customer in this shop",
+            otherCustomerId: foundCustomer.id,
+          };
+        } else {
+          phoneConflict = { conflict: false };
+        }
+      } catch (error) {
+        phoneConflict = {
+          conflict: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+  }
+
   // If person found in QIVOS but not in Shopify, sync metafields for the current searcher
   if (qivosPersonExists && !shopifyCustomer && requestBody.customerId && shop) {
     try {
@@ -1080,6 +1116,7 @@ const inactiveMembershipSyncResults: any[] = [];
         ...matchResult,
         ...(shopifyLookupError ? { shopifyLookupError } : {}),
       },
+      phoneConflict: phoneConflict,
       inactiveMembershipSync: inactiveMembershipSyncResults,
       inactiveMemberships,
       personQCCode: qivosPersonQCCode ?? undefined,
