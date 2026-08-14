@@ -22,11 +22,36 @@
 
 export const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS, PUT, DELETE",
   "Access-Control-Allow-Headers":
     "Content-Type, Accept, Authorization, x-shopify-shop-domain, x-shop-domain, x-shop-domain-name",
   "Access-Control-Max-Age": "86400",
 };
+
+export function getCorsHeaders(
+  origin: string | null,
+  methods: string = "POST, OPTIONS",
+) {
+  const allowedOrigin =
+    origin && origin !== "null"
+      ? origin
+      : CORS_HEADERS["Access-Control-Allow-Origin"];
+
+  const headers: Record<string, string> = {
+    "Access-Control-Allow-Origin": allowedOrigin,
+    "Access-Control-Allow-Methods": methods,
+    "Access-Control-Allow-Headers":
+      "Content-Type, Accept, Authorization, x-shopify-shop-domain, x-shop-domain, x-shop-domain-name",
+    "Access-Control-Max-Age": "86400",
+  };
+
+  // If an explicit origin is provided, allow credentials.
+  if (origin && origin !== "null") {
+    headers["Access-Control-Allow-Credentials"] = "true";
+  }
+
+  return headers;
+}
 
 export function json(data: unknown, init: ResponseInit = {}) {
   return Response.json(data, {

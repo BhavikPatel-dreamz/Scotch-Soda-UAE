@@ -6,7 +6,7 @@ import {
   type CustomerSyncBody,
 } from "../../utils/shopify-customer-metafields.server";
 import { ensureStoreRecord, toShopifyCustomerGid } from "../../utils/store.server";
-import { CORS_HEADERS } from "../../utils/cors.server";
+import { CORS_HEADERS, getCorsHeaders } from "../../utils/cors.server";
 import { QIVOS_BESIDE_API_BASE_URL } from "../../utils/constants";
 import {
   extractStringValue,
@@ -133,23 +133,23 @@ function jsonResponse(
 
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  // const corsHeaders = getCorsHeaders(request.headers.get("Origin"), "PUT, OPTIONS");
+  const corsHeaders = getCorsHeaders(request.headers.get("Origin"), "PUT, OPTIONS, GET, POST");
 
   if (request.method === "OPTIONS") {
     return new Response(null, {
       status: 204,
-      headers: CORS_HEADERS,
+      headers: corsHeaders,
     });
   }
 
   return new Response("Method Not Allowed", {
     status: 405,
-    headers: CORS_HEADERS,
+    headers: corsHeaders,
   });
 };
 
 export const action = async ({ request, params }: ActionFunctionArgs) => {
-  // const corsHeaders = getCorsHeaders(request.headers.get("Origin"));
+  const corsHeaders = getCorsHeaders(request.headers.get("Origin"), "PUT, OPTIONS, GET, POST");
 
   if (request.method !== "PUT") {
     return new Response("Method Not Allowed", {
@@ -166,7 +166,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       status: 400,
       headers: {
         "Content-Type": "application/json",
-        ...CORS_HEADERS,
+        ...corsHeaders,
       },
     });
   }
@@ -202,7 +202,7 @@ const requestBody: PersonDetailsBody = {
       status: 400,
       headers: {
         "Content-Type": "application/json",
-        ...CORS_HEADERS,
+        ...corsHeaders,
       },
     });
   }
@@ -218,7 +218,7 @@ const requestBody: PersonDetailsBody = {
         status: 400,
         headers: {
           "Content-Type": "application/json",
-          ...CORS_HEADERS,
+          ...corsHeaders,
         },
       },
     );
@@ -304,7 +304,7 @@ const requestBody: PersonDetailsBody = {
           status: 500,
           headers: {
             "Content-Type": "application/json",
-            ...CORS_HEADERS,
+            ...corsHeaders,
           },
         },
       );
@@ -317,7 +317,7 @@ const requestBody: PersonDetailsBody = {
         status: personResponse.status,
         headers: {
           "Content-Type": "application/json",
-          ...CORS_HEADERS,
+          ...corsHeaders,
         },
       });
     }
@@ -331,9 +331,10 @@ const requestBody: PersonDetailsBody = {
         status: 422,
         headers: {
           "Content-Type": "application/json",
-          ...CORS_HEADERS,
+          ...corsHeaders,
         },
       });
+    }
     }
 
     qivosPerson = extractQivosPayload(personResponseData);
@@ -403,7 +404,7 @@ if (requestedLastName) {
           status: 500,
           headers: {
             "Content-Type": "application/json",
-            ...CORS_HEADERS,
+            ...corsHeaders,
           },
         },
       );
@@ -544,10 +545,10 @@ if (requestedLastName) {
     }),
     {
       status: 200,
-      headers: {
-        "Content-Type": "application/json",
-        ...CORS_HEADERS,
-      },
+        headers: {
+            "Content-Type": "application/json",
+            ...corsHeaders,
+          },
     },
   );
 };
