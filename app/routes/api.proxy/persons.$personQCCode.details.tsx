@@ -335,7 +335,6 @@ const requestBody: PersonDetailsBody = {
         },
       });
     }
-    }
 
     qivosPerson = extractQivosPayload(personResponseData);
     verifiedPersonQCCode =
