@@ -11,7 +11,6 @@ import { QIVOS_BESIDE_API_BASE_URL } from "../../utils/constants";
 import {
   extractStringValue,
   extractObjectRecord,
-  findFirstNestedValue,
   normalizeBooleanValue,
   extractQivosPayload,
   isQivosLogicalFailure,
@@ -233,8 +232,6 @@ const requestBody: PersonDetailsBody = {
   let personResponseData: unknown = null;
   let qivosPerson: Record<string, unknown> | undefined;
   let verifiedPersonQCCode = personQCCode;
-  let existingFirstName: string | undefined;
-  let existingLastName: string | undefined;
 
   async function refreshPersonDetailsForSync() {
     const MAX_RETRIES = 2;
@@ -349,13 +346,8 @@ const requestBody: PersonDetailsBody = {
       );
     }
 
-    existingFirstName = findFirstNestedValue(qivosPerson, [
-      "firstName",
-      "givenName",
-    ]);
-    existingLastName = findFirstNestedValue(qivosPerson, [
-      "lastName"
-    ]);
+    // extract names when present for potential backfill/inspection
+    // (not currently used directly in this handler)
   } else {
     console.log(
       `[QIVOS] Skipping person details fetch for email-only update on ${personQCCode}`,
