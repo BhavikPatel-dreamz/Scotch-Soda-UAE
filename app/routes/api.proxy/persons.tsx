@@ -25,8 +25,10 @@ import {
 import { sendQivosRequestWithRetry } from "app/utils/qivos-person-backfill.server";
 
 const QIVOS_PERSONS_URL = `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/persons`;
+// NOTE: /qc-api/v1.0/protected/persons/{id} responds 500 on this tenant.
+// The readable person-details endpoint is the unprotected one.
 const QIVOS_PERSON_DETAILS_BASE_URL =
-  `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/protected/persons`;
+  `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/persons`;
 
 type PersonCreateBody = CustomerSyncBody & {
   consentList?: unknown[];

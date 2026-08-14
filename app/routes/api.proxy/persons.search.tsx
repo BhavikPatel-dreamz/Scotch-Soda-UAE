@@ -1,15 +1,15 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { authenticateApiProxyRequest } from "../../utils/api-proxy-auth.server";
 import { getQIVOSToken } from "../../utils/qivos-token.server";
-import { ensureStoreRecord, resolveCurrentShop } from "../../utils/store.server";
+import {
+  ensureStoreRecord,
+  resolveCurrentShop,
+  toShopifyCustomerGid,
+} from "../../utils/store.server";
 import { getAdminGraphqlClient, type AdminGraphqlClient } from "../../utils/shopify-admin.server";
 import { CORS_HEADERS } from "../../utils/cors.server";
 import { QIVOS_BESIDE_API_BASE_URL } from "../../utils/constants";
-import {
-  backfillMissingQivosPersonDetails,
-  extractPersonQCCode,
-  fetchShopifyCustomerProfile,
-} from "../../utils/qivos-person-backfill.server";
+import { extractPersonQCCode } from "../../utils/qivos-person-backfill.server";
 import {
   extractStringValue,
   extractObjectRecord,
@@ -624,6 +624,9 @@ function extractLoyaltyTierFromQivosPerson(
     "tierCode",
     "tierName",
     "tier_name",
+    // QIVOS returns the membership tier as `category` (e.g. WHITE/GOLD) and
+    // leaves `tierCode` null, so it must be part of the lookup.
+    "category",
   ];
 
   for (const field of tierFields) {
@@ -737,6 +740,27 @@ try {
   }
 
   return results;
+}
+
+/**
+ * Same-number check that tolerates a country prefix on either side.
+ *
+ * Shopify stores the native `phone` field in E.164 ("+971562150685") while this
+ * app saves the national number in the `custom.phone` metafield ("562150685"),
+ * so a strict digit comparison misses genuine matches. Requires at least 7
+ * significant digits so short values cannot collide.
+ */
+function phoneNumbersLikelySame(
+  first: string,
+  second: string | null | undefined,
+): boolean {
+  const a = String(first ?? "").replace(/\D/g, "");
+  const b = String(second ?? "").replace(/\D/g, "");
+  if (!a || !b) return false;
+  if (a === b) return true;
+
+  const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+  return shorter.length >= 7 && longer.endsWith(shorter);
 }
 
 // ─── Match response builder ───────────────────────────────────────────────────
@@ -998,40 +1022,12 @@ const inactiveMembershipSyncResults: any[] = [];
         : "Shopify customer check failed unexpectedly";
   }
 
-  if (qivosPersonExists && shop && shopifyCustomer) {
-    let shopifyProfile = null;
-    try {
-      shopifyProfile = await fetchShopifyCustomerProfile({
-        shop,
-        customerId: shopifyCustomer.id,
-      });
-    } catch (error) {
-      console.warn("[persons.search] Failed to load Shopify profile for person backfill:", {
-        shop,
-        shopifyCustomerId: shopifyCustomer.id,
-        error,
-      });
-    }
-
-    const backfillResults = await Promise.all(
-      qivosPersons.map((person) =>
-        backfillMissingQivosPersonDetails({
-          shop,
-          customerId: shopifyCustomer.id,
-          person,
-          profile: shopifyProfile,
-        }),
-      ),
-    );
-
-    if (backfillResults.some((result) => result.namePatched || result.emailPatched)) {
-      console.log("[persons.search] Backfilled missing person details from Shopify profile:", {
-        shop,
-        shopifyCustomerId: shopifyCustomer.id,
-        results: backfillResults,
-      });
-    }
-  }
+  // NOTE: no QIVOS person backfill happens here on purpose. This endpoint runs
+  // BEFORE the OTP is validated, so patching at this point would let anyone who
+  // merely types a phone number write their own name/email into the QIVOS
+  // profile that owns it. The name/email patch belongs to the post-OTP path
+  // (persons/{personQCCode}/details, and the allowQivosBackfill refresh), which
+  // runs against the authenticated customer.
 
   // ── Build response ───────────────────────────────────────────────────────
   const matchResult = buildMatchResponse({
@@ -1048,24 +1044,43 @@ const inactiveMembershipSyncResults: any[] = [];
   // different Shopify customer in this shop. If so, return an alert
   // so the caller can decide what to do. Do NOT create automatically.
   let phoneConflict: Record<string, unknown> | undefined = undefined;
-  if (shop && shopifyCustomer && requestBody.customerId) {
+  const requestingCustomerGid = toShopifyCustomerGid(
+    requestBody.customerId ? String(requestBody.customerId) : undefined,
+  );
+
+  if (shop && requestingCustomerGid) {
     const phoneToCheck =
-      qivosPhone ?? (identifier.type === "phone" ? identifier.value : undefined);
+      identifier.type === "phone" ? identifier.value : qivosPhone;
 
     if (phoneToCheck) {
       try {
-        const adminClient = await getAdminGraphqlClient(shop);
-        const foundCustomer = await findShopifyCustomer(adminClient, {
-          type: "phone",
-          value: phoneToCheck,
-        });
+        // Who in this shop already owns the number being linked? Compare that
+        // against the customer making the request — comparing it against the
+        // phone lookup itself (as before) could never differ, so the conflict
+        // was never reported.
+        // For a phone search the owner was already resolved above; only fall
+        // back to a fresh lookup for email searches.
+        const phoneOwner =
+          identifier.type === "phone" && phoneToCheck === identifier.value
+            ? shopifyCustomer
+            : await findShopifyCustomerByPhone(
+                await getAdminGraphqlClient(shop),
+                phoneToCheck,
+              );
 
-        if (foundCustomer && foundCustomer.id !== shopifyCustomer.id) {
+        // findShopifyCustomerByPhone falls back to the first search hit when
+        // nothing matches exactly, so re-verify before blocking anyone — a
+        // loose hit must not stop a legitimate customer from linking.
+        if (
+          phoneOwner &&
+          phoneOwner.id !== requestingCustomerGid &&
+          phoneNumbersLikelySame(phoneToCheck, phoneOwner.phone)
+        ) {
           phoneConflict = {
             conflict: true,
             message:
-              "Phone number already belongs to a different Shopify customer in this shop",
-            otherCustomerId: foundCustomer.id,
+              "This mobile number is already linked to another account in this store.",
+            otherCustomerId: phoneOwner.id,
           };
         } else {
           phoneConflict = { conflict: false };
@@ -1129,6 +1144,12 @@ const inactiveMembershipSyncResults: any[] = [];
       firstName: qivosFirstName,
       lastName: qivosLastName,
       email: qivosEmail ?? shopifyCustomer?.email ?? undefined,
+      // Unfallback'd QIVOS values — callers deciding whether a profile still
+      // needs patching must not see a Shopify address standing in for a blank
+      // QIVOS one.
+      qivosFirstName: qivosFirstName ?? undefined,
+      qivosLastName: qivosLastName ?? undefined,
+      qivosEmail: qivosEmail ?? undefined,
       phone: qivosPhone ?? shopifyCustomer?.phone ?? undefined,
       shopCountryCode,
     }),

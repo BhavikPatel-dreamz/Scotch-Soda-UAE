@@ -1313,6 +1313,7 @@ export async function getCustomerIdentityMetafields({
     `#graphql
       query GetCustomerMetafields($customerId: ID!, $namespace: String!) {
         customer(id: $customerId) {
+          email
           personQCCode: metafield(namespace: $namespace, key: "person_qc_code") {
             value
           }
@@ -1348,6 +1349,7 @@ export async function getCustomerIdentityMetafields({
   const result = (await response.json()) as {
     data?: {
       customer?: {
+        email?: string | null;
         personQCCode?: { value?: string } | null;
         loyaltyQCCode?: { value?: string } | null;
         countryCode?: { value?: string } | null;
@@ -1374,6 +1376,10 @@ export async function getCustomerIdentityMetafields({
   const customer = result.data?.customer;
 
   return {
+    // The account email lives on the customer record, not in a metafield. The
+    // extension needs it to register a new QIVOS person and to patch a blank
+    // QIVOS email, so surface it alongside the stored metafields.
+    email: customer?.email ?? undefined,
     personQCCode: customer?.personQCCode?.value ?? undefined,
     loyaltyQCCode: customer?.loyaltyQCCode?.value ?? undefined,
     countryCode: normalizeCountryCode(customer?.countryCode?.value),

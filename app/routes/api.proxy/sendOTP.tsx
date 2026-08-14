@@ -70,6 +70,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   let token: string;
   try {
     token = await getQIVOSToken();
+    console.log("[sendOTP] Obtained QIVOS token (masked):", typeof token === 'string' ? `${token.slice(0,8)}...${token.slice(-8)}` : token);
   } catch (err) {
     console.error("Failed to obtain QIVOS token:", err);
     return new Response(
@@ -91,6 +92,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const otpRequestUrl = `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/otp/request${
     activate ? "?activate=1" : ""
   }`;
+  console.log("[sendOTP] Requesting OTP URL:", otpRequestUrl);
+  console.log("[sendOTP] Request body:", { mobileNumber, countryCode, otpProfileCode, type, languageCode, activate });
 
   const thirdPartyResponse = await fetch(otpRequestUrl, {
     method: "POST",
@@ -108,8 +111,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }),
   });
 
-  const text = await thirdPartyResponse.text();
+  console.log("[sendOTP] QIVOS response status:", thirdPartyResponse.status);
+  console.log("[sendOTP] QIVOS response headers:", Object.fromEntries(thirdPartyResponse.headers));
 
+  const text = await thirdPartyResponse.text();
+  console.log("[sendOTP] QIVOS response text:", text);
 
   let responseData: unknown;
   try {

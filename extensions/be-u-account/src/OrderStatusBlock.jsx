@@ -1195,13 +1195,37 @@ function Extension() {
         customerId: shopifyCustomerId,
       });
 
-      // Determine if person exists and needs profile patching
+      // Stop before sending an OTP if this number is already linked to a
+      // different Shopify account in this store — otherwise two accounts end up
+      // pointing at the same Be U membership.
+      // @ts-ignore
+      if (checkResult.phoneConflict?.conflict === true) {
+        setState((prev) => ({
+          ...prev,
+          sendingOtp: false,
+          infoMessage: "",
+          phoneError:
+            // @ts-ignore
+            checkResult.phoneConflict.message ||
+            "This mobile number is already linked to another account in this store.",
+        }));
+        return;
+      }
+
+      // Determine if person exists and needs profile patching.
+      // Use the qivos* fields, which never fall back to the Shopify record —
+      // otherwise a blank QIVOS email is hidden by the Shopify one and the
+      // patch step is skipped.
       // @ts-ignore
       const isExisting = !!checkResult.personQCCode;
       const needsPatch = !!(
         isExisting &&
         // @ts-ignore
-        (!checkResult.firstName || !checkResult.lastName || !checkResult.email)
+        (!checkResult.qivosFirstName ||
+          // @ts-ignore
+          !checkResult.qivosLastName ||
+          // @ts-ignore
+          !checkResult.qivosEmail)
       );
 
       // 2. Proceed with sending OTP
@@ -1410,8 +1434,26 @@ function Extension() {
         );
       }
 
+      // Persist the linking identity BEFORE refreshing. The server-side QIVOS
+      // refresh (and its name/email backfill) looks the person up by the saved
+      // phone metafield, so the phone has to be stored before that call, not
+      // after it.
+      if (state.isExistingPerson) {
+        await saveCustomerMetafields({
+          phone: state.phone,
+          countryCode: state.countryCode,
+          personQCCode: state.personQCCode,
+          loyaltyQCCode: state.loyaltyQCCode,
+          redeemPoint: state.redeemPoint || state.pointBalance,
+          canRedeem: state.canRedeem,
+          tier: state.tier,
+          loyaltySync: true,
+        });
+      }
+
+      // No quickLoad here: the fast path returns stored values before QIVOS is
+      // ever contacted, which would silently drop allowQivosBackfill.
       const refreshed = await fetchCustomerMetafields({
-        quickLoad: true,
         allowQivosBackfill: true,
       });
       const refreshedInactiveMemberships = Array.isArray(

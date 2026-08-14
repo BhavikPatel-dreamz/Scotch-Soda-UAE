@@ -22,6 +22,7 @@ import {
   collectInactiveLoyaltyMemberships,
 } from "../utils/customer-account-loyalty.server";
 import { parsePhoneNumberFromString } from "libphonenumber-js/min";
+import type { CountryCode } from "libphonenumber-js";
 
 const QIVOS_PERSONS_SEARCH_URL = `${QIVOS_BESIDE_API_BASE_URL}/qc-api/v1.0/persons/search`;
 
@@ -49,14 +50,26 @@ type CustomerIdentitySnapshot = Awaited<
   ReturnType<typeof getCustomerIdentityMetafields>
 >;
 
-function normalizePhoneForQivos(phone: string | undefined): string | undefined {
+function normalizePhoneForQivos(
+  phone: string | undefined,
+  countryCode?: string,
+): string | undefined {
   if (!phone) return undefined;
-  const parsedPhone = parsePhoneNumberFromString(phone);
+
+  // The stored metafield is usually a national number (e.g. "562150685" for AE),
+  // which libphonenumber cannot parse without a region hint. Always pass the
+  // saved country so 9-digit AE/SA numbers resolve instead of being dropped.
+  const region = countryCode?.trim().toUpperCase();
+  const parsedPhone =
+    (region ? parsePhoneNumberFromString(phone, region as CountryCode) : undefined) ??
+    parsePhoneNumberFromString(phone);
+
   if (parsedPhone?.nationalNumber) {
     return String(parsedPhone.nationalNumber);
   }
+
   const digits = phone.replace(/\D/g, "");
-  return digits.length >= 10 ? digits.slice(-10) : undefined;
+  return digits || undefined;
 }
 
 const shopCountriesCache = new Map<string, { code: string; name: string }[]>();
@@ -550,7 +563,7 @@ async function syncCustomerFromQivosSearch(params: {
   personDetailsMissing?: boolean;
 }> {
   const { request, shop, customerId, metafields, allowQivosBackfill } = params;
-  const phone = normalizePhoneForQivos(metafields.phone);
+  const phone = normalizePhoneForQivos(metafields.phone, metafields.countryCode);
 
   if (!phone) {
     return {
@@ -773,7 +786,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     url.searchParams.get("allowQivosBackfill") === "1";
 
   // ── NEW: quickLoad param — return DB-only data immediately, skip QIVOS ──
-  const quickLoad = url.searchParams.get("quickLoad") === "1";
+  // allowQivosBackfill always wins: the caller explicitly asked for the QIVOS
+  // round-trip that patches missing person details, and the quickLoad fast path
+  // returns before any of that runs.
+  const quickLoad =
+    url.searchParams.get("quickLoad") === "1" && !allowQivosBackfill;
 
   const tokenCustomerId =
     typeof sessionToken.sub === "string"
@@ -874,7 +891,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     if (alreadyLinked && !allowQivosBackfill) {
       // Customer already linked — fetch ONLY balance/canRedeem from QIVOS.
       const freshBalance = await fetchFreshLoyaltyBalanceFromQivos({
-        phone: metafields.phone,
+        phone: normalizePhoneForQivos(metafields.phone, metafields.countryCode),
         countryCode: metafields.countryCode,
       }).catch((err): {
         pointBalance?: string;
