@@ -179,22 +179,110 @@ function extractFirstFromArrayField(
 //   return undefined;
 // }
 
+const CUSTOMER_METAFIELD_DEFINITIONS = [
+  { name: "Person QC Code", key: "person_qc_code" },
+  { name: "Loyalty QC Code", key: "loyalty_qc_code" },
+  { name: "Country Code", key: "country_code" },
+  { name: "Phone", key: "phone" },
+  { name: "Tier", key: "tier" },
+  { name: "Redeem Point", key: "redeem_point" },
+  { name: "Can Redeem", key: "can_redeem", type: "boolean" },
+  { name: "Loyalty Sync", key: "loyalty_sync", type: "boolean" },
+  { name: "Qivos", key: "qivos" },
+  { name: "QIVOS Note", key: "qivos_note" },
+];
+
+/**
+ * Keys that already have a definition on the shop, so repeated saves within the
+ * same server instance skip the definition round-trip entirely.
+ */
+const definitionsEnsuredFor = new Set<string>();
+
+async function fetchExistingDefinitionKeys(
+  adminClient: AdminGraphqlClient,
+  namespace: string,
+): Promise<Set<string> | null> {
+  const response = await adminClient.graphql(
+    `#graphql
+      query CustomerMetafieldDefinitions($namespace: String!) {
+        metafieldDefinitions(ownerType: CUSTOMER, namespace: $namespace, first: 250) {
+          nodes { key }
+        }
+      }
+    `,
+    { variables: { namespace } },
+  );
+
+  const result = (await response.json()) as {
+    data?: { metafieldDefinitions?: { nodes?: Array<{ key?: string }> } };
+    errors?: unknown;
+  };
+
+  if (result.errors || !result.data?.metafieldDefinitions) {
+    // Fall back to attempting every create; TAKEN errors are ignored anyway.
+    console.warn(
+      "[metafields] Could not read existing definitions:",
+      JSON.stringify(result.errors ?? "no data returned"),
+    );
+    return null;
+  }
+
+  return new Set(
+    (result.data.metafieldDefinitions.nodes ?? [])
+      .map((node) => node.key)
+      .filter((key): key is string => Boolean(key)),
+  );
+}
+
+/**
+ * Creates the customer metafield definitions once per shop.
+ *
+ * Definitions are what make these metafields visible (and editable) on the
+ * customer page in the Shopify admin — values written by `metafieldsSet`
+ * without a definition are readable through the API but never rendered in the
+ * admin UI. Every write path must go through this, not just the QIVOS sync.
+ */
+export async function ensureCustomerMetafieldDefinitions(
+  adminClient: AdminGraphqlClient,
+  shop: string,
+  namespace: string,
+): Promise<void> {
+  const cacheKey = `${shop}:${namespace}`;
+  if (definitionsEnsuredFor.has(cacheKey)) {
+    return;
+  }
+
+  try {
+    await ensureMetafieldDefinitions(adminClient, namespace);
+    definitionsEnsuredFor.add(cacheKey);
+  } catch (error) {
+    // Never block the metafield write on a definition failure.
+    console.warn(
+      `[metafields] Failed to ensure customer metafield definitions for ${shop}:`,
+      error,
+    );
+  }
+}
+
 export async function ensureMetafieldDefinitions(
   adminClient: AdminGraphqlClient,
   namespace: string,
 ): Promise<void> {
-  const definitions = [
-    { name: "Person QC Code", key: "person_qc_code" },
-    { name: "Loyalty QC Code", key: "loyalty_qc_code" },
-    { name: "Country Code", key: "country_code" },
-    { name: "Phone", key: "phone" },
-    { name: "Tier", key: "tier" },
-    { name: "Redeem Point", key: "redeem_point" },
-    { name: "Can Redeem", key: "can_redeem", type: "boolean" },
-    { name: "Loyalty Sync", key: "loyalty_sync", type: "boolean" },
-    { name: "Qivos", key: "qivos" },
-    { name: "QIVOS Note", key: "qivos_note" },
-  ];
+  const existingKeys = await fetchExistingDefinitionKeys(adminClient, namespace);
+  const definitions = existingKeys
+    ? CUSTOMER_METAFIELD_DEFINITIONS.filter(
+        (def) => !existingKeys.has(def.key),
+      )
+    : CUSTOMER_METAFIELD_DEFINITIONS;
+
+  if (definitions.length === 0) {
+    return;
+  }
+
+  console.log(
+    `[metafields] Creating ${definitions.length} missing customer metafield definition(s) in "${namespace}":`,
+    definitions.map((def) => def.key).join(", "),
+  );
 
   for (const def of definitions) {
     const response = await adminClient.graphql(
@@ -1157,6 +1245,12 @@ export async function saveCustomerIdentityMetafields({
   values: CustomerIdentityMetafieldValues;
 }): Promise<SaveCustomerMetafieldsResult> {
   const adminClient = await getAdminGraphqlClient(shop);
+
+  // Without definitions the saved values stay invisible on the customer page in
+  // the Shopify admin, so ensure them here too — this is the path the customer
+  // account extension and the orders/paid webhook use.
+  await ensureCustomerMetafieldDefinitions(adminClient, shop, namespace);
+
   return setCustomerIdentityMetafields(
     adminClient,
     customerId,
@@ -1220,7 +1314,7 @@ export async function syncCustomerMetafields(
   let customerId = providedCustomerId;
   let customerCreated = false;
 
-  await ensureMetafieldDefinitions(adminClient, namespace);
+  await ensureCustomerMetafieldDefinitions(adminClient, shop, namespace);
 
   if (!customerId) {
     try {
@@ -1360,16 +1454,23 @@ export async function getCustomerIdentityMetafields({
         loyaltySync?: { value?: string } | null;
       } | null;
     };
-    errors?: Array<{ message?: string }>;
+    // Shopify returns an array of GraphQL errors, but a plain string for
+    // transport-level failures such as an invalid/expired access token.
+    errors?: Array<{ message?: string }> | string;
   };
 
-  const errors = result.errors ?? [];
-  if (errors.length > 0) {
-    throw new Error(
-      errors
+  const errorMessage = Array.isArray(result.errors)
+    ? result.errors
         .map((e) => e.message)
         .filter(Boolean)
-        .join(", "),
+        .join(", ")
+    : typeof result.errors === "string"
+      ? result.errors
+      : undefined;
+
+  if (errorMessage) {
+    throw new Error(
+      `Failed to read customer metafields for ${shop}: ${errorMessage}`,
     );
   }
 
