@@ -958,7 +958,19 @@ function Extension() {
         savingMetafields: false,
       }));
 
-      return result.ok === true || response.ok;
+      const saved = result.ok === true || response.ok;
+
+      // A failed save leaves the dashboard looking healthy (points come from
+      // QIVOS) while nothing lands on the Shopify customer, so make the real
+      // server error visible instead of silently returning false.
+      if (!saved) {
+        console.error(
+          `[Be U] Saving customer metafields failed (${response.status}):`,
+          result?.error ?? result,
+        );
+      }
+
+      return saved;
     } catch (error) {
       console.error("Failed to save metafields:", error);
       setState((prev) => ({
