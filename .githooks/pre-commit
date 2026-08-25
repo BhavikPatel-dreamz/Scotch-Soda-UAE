@@ -1,0 +1,356 @@
+#!/usr/bin/env bash
+#
+# .githooks/pre-commit — single-file security hook (version controlled)
+#
+# Install:   bash .githooks/pre-commit --install
+#            (sets core.hooksPath=.githooks — nothing is copied into .git/)
+# Bypass:    SKIP_SECURITY_SCAN=1 git commit ...   or   git commit --no-verify
+# Fast mode: SKIP_SCANNER=1 git commit ...         (skips the npx scanner only)
+#
+set -euo pipefail
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m'
+
+# ----------------------------------------------------------------------------
+# Self-install: writes .git/hooks/pre-commit that calls this script
+# ----------------------------------------------------------------------------
+if [ "${1:-}" = "--install" ]; then
+  ROOT=$(git rev-parse --show-toplevel)
+  git -C "$ROOT" config core.hooksPath .githooks
+  chmod +x "$ROOT/.githooks/pre-commit"
+  git -C "$ROOT" update-index --chmod=+x .githooks/pre-commit 2>/dev/null || true
+  echo "core.hooksPath set to .githooks — pre-commit hook active."
+  exit 0
+fi
+
+if [ "${SKIP_SECURITY_SCAN:-0}" = "1" ]; then
+  echo -e "${YELLOW}SKIP_SECURITY_SCAN=1 — security hook skipped.${NC}"
+  exit 0
+fi
+
+# ----------------------------------------------------------------------------
+# PATH fix — GUI git clients launch hooks with a minimal PATH
+# ----------------------------------------------------------------------------
+for DIR in /usr/local/bin /opt/homebrew/bin; do
+  [ -d "$DIR" ] && PATH="$PATH:$DIR"
+done
+
+# Prepend the nvm-managed Node so it wins over an older system Node
+# (e.g. Node 14 in /usr/local/bin, whose npx does not support --yes).
+NVM_ROOT="${NVM_DIR:-$HOME/.nvm}"
+NVM_BIN=""
+if [ -s "$NVM_ROOT/alias/default" ]; then
+  NVM_ALIAS=$(tr -d '[:space:]' < "$NVM_ROOT/alias/default")
+  NVM_BIN=$(ls -d "$NVM_ROOT/versions/node/v${NVM_ALIAS#v}"*/bin 2>/dev/null | sort -V | tail -1)
+fi
+if [ -z "$NVM_BIN" ]; then
+  NVM_BIN=$(ls -d "$NVM_ROOT/versions/node"/v*/bin 2>/dev/null | sort -V | tail -1)
+fi
+[ -n "$NVM_BIN" ] && PATH="$NVM_BIN:$PATH"
+export PATH
+
+ROOT=$(git rev-parse --show-toplevel)
+cd "$ROOT"
+GITIGNORE="$ROOT/.gitignore"
+
+# ----------------------------------------------------------------------------
+# 1. Ensure .gitignore entries
+# ----------------------------------------------------------------------------
+for PATTERN in "*.woff2" ".vscode/" "temp_auto_push.bat"; do
+  if ! grep -qxF "$PATTERN" "$GITIGNORE" 2>/dev/null; then
+    if [ -s "$GITIGNORE" ] && [ -n "$(tail -c 1 "$GITIGNORE")" ]; then
+      echo "" >> "$GITIGNORE"
+    fi
+    echo "$PATTERN" >> "$GITIGNORE"
+    echo "Added missing entry '$PATTERN' to .gitignore"
+  fi
+done
+git add -- "$GITIGNORE" 2>/dev/null || true
+
+# ----------------------------------------------------------------------------
+# 2. Strip .vscode, *.woff2, and temp_auto_push.bat from the commit (index) and working tree
+# ----------------------------------------------------------------------------
+if git ls-files -z -- '.vscode' '.vscode/*' | grep -qz .; then
+  git rm -r --cached --ignore-unmatch -- '.vscode' > /dev/null
+  echo "Unstaged tracked folder: .vscode"
+fi
+[ -d "$ROOT/.vscode" ] && rm -rf "$ROOT/.vscode" && echo "Deleted from working directory: .vscode"
+
+WOFF2_TRACKED=$(git ls-files -- '*.woff2')
+if [ -n "$WOFF2_TRACKED" ]; then
+  printf '%s\n' "$WOFF2_TRACKED" | tr '\n' '\0' | xargs -0 git rm --cached --ignore-unmatch -- > /dev/null
+  echo "Unstaged tracked *.woff2 file(s):"
+  printf '%s\n' "$WOFF2_TRACKED" | while IFS= read -r f; do echo "  $f"; done
+fi
+find "$ROOT" -name "*.woff2" -not -path "*/node_modules/*" -not -path "*/.git/*" -delete 2>/dev/null || true
+
+# Strip local helper scripts that must never ship
+BAT_TRACKED=$(git ls-files -- 'temp_auto_push.bat' '**/temp_auto_push.bat')
+if [ -n "$BAT_TRACKED" ]; then
+  printf '%s\n' "$BAT_TRACKED" | tr '\n' '\0' | xargs -0 git rm --cached --ignore-unmatch -- > /dev/null
+  echo "Unstaged tracked temp_auto_push.bat:"
+  printf '%s\n' "$BAT_TRACKED" | while IFS= read -r f; do echo "  $f"; done
+fi
+find "$ROOT" -name "temp_auto_push.bat" -not -path "*/node_modules/*" -not -path "*/.git/*" -delete 2>/dev/null || true
+
+# ----------------------------------------------------------------------------
+# 3. Babel / config malware indicator check
+# ----------------------------------------------------------------------------
+echo ""
+echo "Scanning project files for known malware indicators..."
+
+# Known malicious indicators (fixed strings, case-insensitive)
+PATTERNS=(
+  "A8-1764-1"
+  "A8-3292-1"
+  "A8-3292-2"
+  "A8-3292"
+  "a322e5f3d311d3080e6f0121063e9adc2490ef1a"
+  "f5c6be4753d6613c97f1b10c4d93a5d97a8f4fb21eb13da0ed04b23a8a61c2f6"
+  "0272b9f2b1a0dda93baebf3bae505e22959a5464"
+  "x-payload-b64"
+  "eth_blockNumber"
+  "eth_getBlockByNumber"
+  "eth_getTransactionCount"
+  "/0x/cls"
+  "/0x/ls"
+  "global.i=\"A8-"
+  "global.i='A8-"
+  "node ./public/fonts/fa-solid-400.woff2"
+  "GHSA-vxq2-vhm7-7mhq"
+)
+
+# Paths excluded from the scan (this hook itself contains the patterns,
+# and lockfiles are huge + never executed).
+EXCLUDE_RE='^(\.githooks/|package-lock\.json$|yarn\.lock$|pnpm-lock\.yaml$|.*\.lock$)'
+
+PATTERN_FILE=$(mktemp)
+FILE_LIST=$(mktemp)
+MATCHES=$(mktemp)
+CAMPAIGN_HITS=$(mktemp)
+trap 'rm -f "$PATTERN_FILE" "$FILE_LIST" "$MATCHES" "$CAMPAIGN_HITS"' EXIT
+
+printf '%s\n' "${PATTERNS[@]}" > "$PATTERN_FILE"
+
+# git ls-files = everything tracked + everything staged, and it already
+# respects .gitignore (so node_modules/build output are never scanned).
+git ls-files -z | tr '\0' '\n' | grep -Ev "$EXCLUDE_RE" > "$FILE_LIST" || true
+
+FILE_COUNT=$(wc -l < "$FILE_LIST" | tr -d ' ')
+
+if [ "$FILE_COUNT" -eq 0 ]; then
+  echo -e "${YELLOW}No files to scan.${NC}"
+else
+  set +e
+  # -I skips binaries, -n gives line numbers, -f reads all patterns in one pass
+  tr '\n' '\0' < "$FILE_LIST" \
+    | xargs -0 grep -F -i -I -n -H -f "$PATTERN_FILE" -- 2>/dev/null > "$MATCHES"
+  set -e
+
+  if [ -s "$MATCHES" ]; then
+    echo "" >&2
+    echo -e "${RED}SECURITY CHECK FAILED — malware indicators detected:${NC}" >&2
+    # grep emits paths relative to the project root
+    while IFS= read -r line; do
+      echo -e "${RED}  $(printf '%.200s' "$line")${NC}" >&2
+    done < "$MATCHES"
+    echo "" >&2
+    echo -e "${RED}Commit rejected. Inspect these files before committing.${NC}" >&2
+    exit 1
+  fi
+
+  echo -e "${GREEN}Indicator scan passed ($FILE_COUNT file(s) scanned).${NC}"
+fi
+
+# ----------------------------------------------------------------------------
+# 3b. NullReceiver / fetch-page-assets campaign (2026-03 → 2026-08)
+#     Payload moved from fake .woff2 fonts into babel.config + VS Code
+#     folderOpen auto-run after the first cleanup. Block both injection points.
+# ----------------------------------------------------------------------------
+# VS Code task that auto-runs on folder open and executes a "font" as Node.
+# Legitimate folderOpen tasks do not invoke node on a .woff2 path.
+if [ -f "$ROOT/.vscode/tasks.json" ]; then
+  if grep -qiE 'folderOpen' "$ROOT/.vscode/tasks.json" 2>/dev/null \
+    && grep -qiE '\.woff2|fa-solid-400|node \./public/fonts' "$ROOT/.vscode/tasks.json" 2>/dev/null; then
+    echo ".vscode/tasks.json: folderOpen task invoking woff2 loader" >> "$CAMPAIGN_HITS"
+  fi
+fi
+
+# Babel/Jest configs: legitimate files are tiny; the loader is appended after
+# module.exports with ~1400 spaces of padding, or uses global.i="A8-…".
+for CFG in babel.config.cjs babel.config.js babel.config.mjs babel.config.json .babelrc .babelrc.js .babelrc.cjs; do
+  [ -f "$ROOT/$CFG" ] || continue
+  if grep -qiE 'global\.i=.A8-|A8-3292|A8-1764' "$ROOT/$CFG" 2>/dev/null; then
+    echo "$CFG: campaign marker / NullReceiver loader" >> "$CAMPAIGN_HITS"
+  fi
+  # Hex-obfuscated IIFE glued after the real config (const 0x… = classic packer).
+  if grep -qE 'const[[:space:]]+0x[0-9a-fA-F]+' "$ROOT/$CFG" 2>/dev/null; then
+    echo "$CFG: obfuscated hex identifier after config (NullReceiver-style)" >> "$CAMPAIGN_HITS"
+  fi
+done
+
+# Compromised npm package (GHSA-vxq2-vhm7-7mhq). Advisory named only 1.2.9;
+# later versions 1.2.10–1.2.14 still shipped the trigger and/or refreshed payload.
+for MANIFEST in package.json package-lock.json yarn.lock pnpm-lock.yaml npm-shrinkwrap.json; do
+  [ -f "$ROOT/$MANIFEST" ] || continue
+  if grep -qE 'fetch-page-assets' "$ROOT/$MANIFEST" 2>/dev/null; then
+    echo "$MANIFEST: depends on fetch-page-assets (compromised maintainer campaign)" >> "$CAMPAIGN_HITS"
+  fi
+done
+
+if [ -s "$CAMPAIGN_HITS" ]; then
+  echo "" >&2
+  echo -e "${RED}SECURITY CHECK FAILED — NullReceiver / fetch-page-assets campaign indicators:${NC}" >&2
+  while IFS= read -r line; do
+    echo -e "${RED}  $line${NC}" >&2
+  done < "$CAMPAIGN_HITS"
+  echo "" >&2
+  echo -e "${RED}Commit rejected. Remove the VS Code auto-task, babel payload, and the npm dependency.${NC}" >&2
+  exit 1
+fi
+
+# ----------------------------------------------------------------------------
+# 4. polin-rider-scanner
+# ----------------------------------------------------------------------------
+if [ "${SKIP_SCANNER:-0}" = "1" ]; then
+  echo -e "${YELLOW}SKIP_SCANNER=1 — polin-rider-scanner skipped.${NC}"
+  exit 0
+fi
+
+if ! command -v node > /dev/null 2>&1 || ! command -v npx > /dev/null 2>&1; then
+  echo -e "${RED}node/npx not found on PATH. Cannot run security scan. Commit rejected.${NC}" >&2
+  exit 1
+fi
+
+NODE_MAJOR=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
+if [ "$NODE_MAJOR" -lt 16 ]; then
+  echo -e "${RED}Node $(node -v) at $(command -v node) is too old for the scanner (needs 16+).${NC}" >&2
+  echo -e "${YELLOW}Install a newer Node, or run: npm i -D polin-rider-scanner${NC}" >&2
+  echo -e "${YELLOW}To commit without the scanner: SKIP_SCANNER=1 git commit ...${NC}" >&2
+  exit 1
+fi
+
+echo ""
+
+# Resolve the scanner: local install first (fast, offline, version-pinned),
+# then a global install, then npx as a last resort.
+if [ -x "$ROOT/node_modules/.bin/polin-rider-scanner" ]; then
+  SCANNER_CMD=("$ROOT/node_modules/.bin/polin-rider-scanner")
+  echo "Running polin-rider-scanner (local)..."
+elif command -v polin-rider-scanner > /dev/null 2>&1; then
+  SCANNER_CMD=(polin-rider-scanner)
+  echo "Running polin-rider-scanner (global)..."
+else
+  SCANNER_CMD=(npx --yes polin-rider-scanner)
+  echo "Running polin-rider-scanner (npx)..."
+fi
+
+SCANNER_ERR=$(mktemp)
+set +e
+OUTPUT=$("${SCANNER_CMD[@]}" --all --json 2>"$SCANNER_ERR")
+SCANNER_EXIT=$?
+set -e
+
+# A scan that finds problems may exit non-zero but still print valid JSON,
+# so only treat this as a run failure when there is no usable output.
+if [ -z "$OUTPUT" ]; then
+  echo -e "${RED}Scanner produced no output (exit $SCANNER_EXIT).${NC}" >&2
+  if [ -s "$SCANNER_ERR" ]; then
+    echo -e "${RED}Scanner error output:${NC}" >&2
+    sed 's/^/  /' "$SCANNER_ERR" >&2
+  fi
+  echo "" >&2
+  echo -e "${YELLOW}Diagnostics:${NC}" >&2
+  echo "  command : ${SCANNER_CMD[*]} --all --json" >&2
+  echo "  cwd     : $(pwd)" >&2
+  echo "  node    : $(command -v node) $(node -v 2>/dev/null)" >&2
+  echo "  npx     : $(command -v npx)" >&2
+  echo "" >&2
+  echo -e "${YELLOW}Tip: npm i -D polin-rider-scanner  (avoids npx entirely)${NC}" >&2
+  echo -e "${YELLOW}To commit without the scanner: SKIP_SCANNER=1 git commit ...${NC}" >&2
+  rm -f "$SCANNER_ERR"
+  exit 1
+fi
+rm -f "$SCANNER_ERR"
+
+echo "$OUTPUT"
+
+# First line = "true"/"false", remaining lines = unsafe file paths.
+# Git LFS pointer files are plaintext ("version https://git-lfs.github.com/spec/...")
+# so polin-rider-scanner flags them as fake-asset. That is a false positive.
+PARSED=$(printf '%s' "$OUTPUT" | node -e "
+let data='';
+process.stdin.on('data', c => data += c);
+process.stdin.on('end', () => {
+  const isLfsPointer = (item) => {
+    const blob = [item.detail, item.reason, item.label].filter(Boolean).join(' ');
+    if (/git-lfs\\.github\\.com\\/spec/i.test(blob)) return true;
+    const p = item.path || item.file || item.filename || item.filePath;
+    if (!p) return false;
+    try {
+      const fs = require('fs');
+      const head = fs.readFileSync(p, { encoding: 'utf8' }).slice(0, 80);
+      return head.startsWith('version https://git-lfs.github.com/spec/');
+    } catch (_) {
+      return false;
+    }
+  };
+  try {
+    const result = JSON.parse(data);
+    const findings = Array.isArray(result.findings) ? result.findings : [];
+    const reasons = Array.isArray(result.reasons) ? result.reasons : [];
+    const leftover = [];
+    const keepPath = (p, item) => {
+      if (!p) return;
+      if (isLfsPointer({ ...item, path: p })) return;
+      leftover.push(p);
+    };
+    findings.forEach((f) => {
+      if (isLfsPointer(f)) return;
+      leftover.push(f.path || f.file || f.filename || f.filePath || f.reason || 'unknown finding');
+    });
+    reasons.forEach((r) => {
+      const files = Array.isArray(r.files) ? r.files : [];
+      if (files.length) {
+        files.forEach((p) => keepPath(p, r));
+        return;
+      }
+      if (isLfsPointer(r)) return;
+      leftover.push(r.reason || r.label || 'scanner reason');
+    });
+    const unique = [...new Set(leftover.filter(Boolean))];
+    const safe = unique.length === 0;
+    console.log(safe ? 'true' : 'false');
+    unique.forEach((f) => console.log(f));
+  } catch (e) {
+    console.log('false');
+    console.log('parse error: ' + e.message);
+  }
+});
+")
+
+SAFE=$(printf '%s\n' "$PARSED" | head -n 1)
+UNSAFE_FILES=$(printf '%s\n' "$PARSED" | tail -n +2)
+
+if [ "$SAFE" = "true" ] && printf '%s' "$OUTPUT" | grep -q 'git-lfs.github.com/spec'; then
+  echo -e "${YELLOW}Ignored fake-asset hit(s) on Git LFS pointer files (not JS payloads).${NC}"
+fi
+
+if [ "$SAFE" != "true" ]; then
+  echo -e "${RED}Security scan failed (safe=false). Commit rejected.${NC}" >&2
+  if [ -n "$UNSAFE_FILES" ]; then
+    echo -e "${RED}Unsafe file(s) detected:${NC}" >&2
+    printf '%s\n' "$UNSAFE_FILES" | while IFS= read -r f; do
+      echo -e "${RED}  - $f${NC}" >&2
+    done
+  else
+    echo -e "${RED}Scanner did not report an unsafe file list; see raw output above.${NC}" >&2
+  fi
+  exit 1
+fi
+
+echo -e "${GREEN}Security scan passed (safe=true). Proceeding with commit.${NC}"
+exit 0
