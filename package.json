@@ -2,7 +2,8 @@
   "name": "scotch-soda",
   "private": true,
   "scripts": {
-    "build": "react-router build",
+    "security:scan": "bash .githooks/pre-commit --ci",
+    "build": "bash -c 'if [ \"${VERCEL:-}\" = \"1\" ] || [ \"${GITHUB_ACTIONS:-}\" = \"true\" ]; then bash .githooks/pre-commit --ci; fi' && react-router build",
     "dev": "cloudflared tunnel run shopify & shopify app dev --tunnel-url=https://scotch-soda-uae.vercel.app:3000",
     "config:link": "shopify app config link",
     "generate": "shopify app generate",

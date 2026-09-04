@@ -2,10 +2,8 @@
 #
 # .githooks/pre-commit — single-file security hook (version controlled)
 #
-# Install:   bash .githooks/pre-commit --install
-#            (sets core.hooksPath=.githooks — nothing is copied into .git/)
-# Bypass:    SKIP_SECURITY_SCAN=1 git commit ...   or   git commit --no-verify
-# Fast mode: SKIP_SCANNER=1 git commit ...         (skips the npx scanner only)
+# Deploy only:  bash .githooks/pre-commit --ci
+# Local commit: no scan (exits 0). Do not run --install. Do not add npm prepare.
 #
 set -euo pipefail
 
@@ -15,19 +13,54 @@ YELLOW='\033[0;33m'
 NC='\033[0m'
 
 # ----------------------------------------------------------------------------
-# Self-install: writes .git/hooks/pre-commit that calls this script
+# Self-install: default Git hook path (.git/hooks), no core.hooksPath.
+# After pull, `npm install` / `prepare` writes the trampoline so commits
+# run this script without any local git config.
 # ----------------------------------------------------------------------------
 if [ "${1:-}" = "--install" ]; then
-  ROOT=$(git rev-parse --show-toplevel)
-  git -C "$ROOT" config core.hooksPath .githooks
+  SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  ROOT=$(cd "$SCRIPT_DIR/.." && git rev-parse --show-toplevel)
   chmod +x "$ROOT/.githooks/pre-commit"
   git -C "$ROOT" update-index --chmod=+x .githooks/pre-commit 2>/dev/null || true
-  echo "core.hooksPath set to .githooks — pre-commit hook active."
+
+  # Do not overwrite Husky (it owns .git/hooks).
+  if [ -d "$ROOT/.husky" ]; then
+    echo "Husky detected — skipped writing .git/hooks/pre-commit. Use Husky to call .githooks/pre-commit."
+    exit 0
+  fi
+
+  GITDIR=$(git -C "$ROOT" rev-parse --git-dir)
+  case "$GITDIR" in
+    /*) ;;
+    *) GITDIR="$ROOT/$GITDIR" ;;
+  esac
+  mkdir -p "$GITDIR/hooks"
+  cat > "$GITDIR/hooks/pre-commit" <<'EOF'
+#!/usr/bin/env bash
+# Trampoline (not version-controlled). Runs the repo hook after clone/pull.
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+HOOK="$ROOT/.githooks/pre-commit"
+[ -f "$HOOK" ] || exit 0
+[ -x "$HOOK" ] || chmod +x "$HOOK" 2>/dev/null || true
+exec "$HOOK"
+EOF
+  chmod +x "$GITDIR/hooks/pre-commit"
+  echo "Installed Git pre-commit trampoline → .githooks/pre-commit (no git config required)."
   exit 0
 fi
 
 if [ "${SKIP_SECURITY_SCAN:-0}" = "1" ]; then
   echo -e "${YELLOW}SKIP_SECURITY_SCAN=1 — security hook skipped.${NC}"
+  exit 0
+fi
+
+CI_MODE=0
+if [ "${1:-}" = "--ci" ] || [ "${GITHUB_ACTIONS:-}" = "true" ] || [ "${CI:-}" = "true" ]; then
+  CI_MODE=1
+fi
+
+# Local git commit: do not scan. Scan only when called with --ci (deploy).
+if [ "$CI_MODE" = "0" ]; then
   exit 0
 fi
 
@@ -44,10 +77,10 @@ NVM_ROOT="${NVM_DIR:-$HOME/.nvm}"
 NVM_BIN=""
 if [ -s "$NVM_ROOT/alias/default" ]; then
   NVM_ALIAS=$(tr -d '[:space:]' < "$NVM_ROOT/alias/default")
-  NVM_BIN=$(ls -d "$NVM_ROOT/versions/node/v${NVM_ALIAS#v}"*/bin 2>/dev/null | sort -V | tail -1)
+  NVM_BIN=$(ls -d "$NVM_ROOT/versions/node/v${NVM_ALIAS#v}"*/bin 2>/dev/null | sort -V | tail -1 || true)
 fi
 if [ -z "$NVM_BIN" ]; then
-  NVM_BIN=$(ls -d "$NVM_ROOT/versions/node"/v*/bin 2>/dev/null | sort -V | tail -1)
+  NVM_BIN=$(ls -d "$NVM_ROOT/versions/node"/v*/bin 2>/dev/null | sort -V | tail -1 || true)
 fi
 [ -n "$NVM_BIN" ] && PATH="$NVM_BIN:$PATH"
 export PATH
@@ -56,10 +89,50 @@ ROOT=$(git rev-parse --show-toplevel)
 cd "$ROOT"
 GITIGNORE="$ROOT/.gitignore"
 
+# Real WOFF/WOFF2/TTF/OTF (and Git LFS pointers) are kept. Only font-named
+# files that are actually JS/malware payloads are stripped.
+is_malware_font() {
+  local f="$1"
+  [ -f "$f" ] || return 1
+  # Read magic as hex so bash does not strip NUL bytes from TTF headers.
+  local hex
+  hex=$(od -An -N4 -tx1 "$f" 2>/dev/null | tr -d ' \n')
+  case "$hex" in
+    774f4632|774f4646|4f54544f|74727565|74746366|00010000) return 1 ;;
+  esac
+
+  local head80
+  head80=$(head -c 80 "$f" 2>/dev/null | tr -d '\0' || true)
+  case "$head80" in
+    "version https://git-lfs.github.com/spec/"*) return 1 ;;
+  esac
+
+  if grep -a -qE 'A8-[0-9]+|x-payload-b64|eth_blockNumber|eth_getBlockByNumber|eth_getTransactionCount|/0x/cls|/0x/ls|global\.i\s*=|require\(["'"'"']node:|#!/usr/bin/env node' "$f" 2>/dev/null; then
+    return 0
+  fi
+  if grep -a -qE '^(import |export |const |var |let |function |\(function)' "$f" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+if [ "$CI_MODE" = "1" ]; then
+  echo "CI mode — scan only (no .gitignore / .vscode / file deletes)."
+else
 # ----------------------------------------------------------------------------
-# 1. Ensure .gitignore entries
+# 1. Ensure .gitignore entries (do not ignore real font files)
 # ----------------------------------------------------------------------------
-for PATTERN in "*.woff2" ".vscode/" "temp_auto_push.bat"; do
+if [ -f "$GITIGNORE" ]; then
+  GITIGNORE_TMP=$(mktemp)
+  grep -vxF '*.woff2' "$GITIGNORE" | grep -vxF '!src/app/fonts/' | grep -vxF '!src/app/fonts/**' > "$GITIGNORE_TMP" || true
+  if ! cmp -s "$GITIGNORE" "$GITIGNORE_TMP"; then
+    mv "$GITIGNORE_TMP" "$GITIGNORE"
+    echo "Removed blanket *.woff2 gitignore rule (real fonts are kept; malware fonts are stripped)."
+  else
+    rm -f "$GITIGNORE_TMP"
+  fi
+fi
+for PATTERN in ".vscode/" "temp_auto_push.bat"; do
   if ! grep -qxF "$PATTERN" "$GITIGNORE" 2>/dev/null; then
     if [ -s "$GITIGNORE" ] && [ -n "$(tail -c 1 "$GITIGNORE")" ]; then
       echo "" >> "$GITIGNORE"
@@ -71,21 +144,14 @@ done
 git add -- "$GITIGNORE" 2>/dev/null || true
 
 # ----------------------------------------------------------------------------
-# 2. Strip .vscode, *.woff2, and temp_auto_push.bat from the commit (index) and working tree
+# 2. Strip .vscode and temp_auto_push.bat from the commit (index)
+#    and working tree. Font files are not deleted here — see 2b.
 # ----------------------------------------------------------------------------
 if git ls-files -z -- '.vscode' '.vscode/*' | grep -qz .; then
   git rm -r --cached --ignore-unmatch -- '.vscode' > /dev/null
   echo "Unstaged tracked folder: .vscode"
 fi
 [ -d "$ROOT/.vscode" ] && rm -rf "$ROOT/.vscode" && echo "Deleted from working directory: .vscode"
-
-WOFF2_TRACKED=$(git ls-files -- '*.woff2')
-if [ -n "$WOFF2_TRACKED" ]; then
-  printf '%s\n' "$WOFF2_TRACKED" | tr '\n' '\0' | xargs -0 git rm --cached --ignore-unmatch -- > /dev/null
-  echo "Unstaged tracked *.woff2 file(s):"
-  printf '%s\n' "$WOFF2_TRACKED" | while IFS= read -r f; do echo "  $f"; done
-fi
-find "$ROOT" -name "*.woff2" -not -path "*/node_modules/*" -not -path "*/.git/*" -delete 2>/dev/null || true
 
 # Strip local helper scripts that must never ship
 BAT_TRACKED=$(git ls-files -- 'temp_auto_push.bat' '**/temp_auto_push.bat')
@@ -95,6 +161,42 @@ if [ -n "$BAT_TRACKED" ]; then
   printf '%s\n' "$BAT_TRACKED" | while IFS= read -r f; do echo "  $f"; done
 fi
 find "$ROOT" -name "temp_auto_push.bat" -not -path "*/node_modules/*" -not -path "*/.git/*" -delete 2>/dev/null || true
+fi
+
+# ----------------------------------------------------------------------------
+# 2b. Font files — remove only if they are malware payloads disguised as fonts.
+#     Real fonts are skipped and left in the commit / working tree.
+# ----------------------------------------------------------------------------
+MALWARE_FONTS=$(mktemp)
+find "$ROOT" \( -name '*.woff2' -o -name '*.woff' -o -name '*.ttf' -o -name '*.otf' \) \
+  -type f \
+  -not -path '*/node_modules/*' \
+  -not -path '*/.git/*' \
+  -not -path '*/.next/*' \
+  -print0 2>/dev/null \
+| while IFS= read -r -d '' font; do
+    if is_malware_font "$font"; then
+      printf '%s\n' "${font#"$ROOT"/}" >> "$MALWARE_FONTS"
+    fi
+  done || true
+
+if [ -s "$MALWARE_FONTS" ]; then
+  echo "" >&2
+  echo -e "${RED}SECURITY CHECK FAILED — malware disguised as font file(s):${NC}" >&2
+  while IFS= read -r font; do
+    echo -e "${RED}  $font${NC}" >&2
+    if [ "$CI_MODE" != "1" ]; then
+      git rm --cached --ignore-unmatch -- "$font" > /dev/null 2>&1 || true
+      rm -f "$ROOT/$font"
+      echo "Removed malware font: $font" >&2
+    fi
+  done < "$MALWARE_FONTS"
+  rm -f "$MALWARE_FONTS"
+  echo "" >&2
+  echo -e "${RED}Commit/CI rejected. Real fonts are kept; only payload files are removed.${NC}" >&2
+  exit 1
+fi
+rm -f "$MALWARE_FONTS"
 
 # ----------------------------------------------------------------------------
 # 3. Babel / config malware indicator check
@@ -281,10 +383,16 @@ echo "$OUTPUT"
 # First line = "true"/"false", remaining lines = unsafe file paths.
 # Git LFS pointer files are plaintext ("version https://git-lfs.github.com/spec/...")
 # so polin-rider-scanner flags them as fake-asset. That is a false positive.
+# Vendor trees (node_modules, .next) are not committed; --all still walks them
+# and Next's compiled webpack helpers can trip unicode:invisible (MED).
 PARSED=$(printf '%s' "$OUTPUT" | node -e "
 let data='';
 process.stdin.on('data', c => data += c);
 process.stdin.on('end', () => {
+  const isVendorPath = (p) => {
+    if (!p || typeof p !== 'string') return false;
+    return /(^|[\\\\/])(node_modules|\\.next)([\\\\/]|$)/.test(p.replace(/\\\\/g, '/'));
+  };
   const isLfsPointer = (item) => {
     const blob = [item.detail, item.reason, item.label].filter(Boolean).join(' ');
     if (/git-lfs\\.github\\.com\\/spec/i.test(blob)) return true;
@@ -305,12 +413,15 @@ process.stdin.on('end', () => {
     const leftover = [];
     const keepPath = (p, item) => {
       if (!p) return;
+      if (isVendorPath(p)) return;
       if (isLfsPointer({ ...item, path: p })) return;
       leftover.push(p);
     };
     findings.forEach((f) => {
       if (isLfsPointer(f)) return;
-      leftover.push(f.path || f.file || f.filename || f.filePath || f.reason || 'unknown finding');
+      const p = f.path || f.file || f.filename || f.filePath;
+      if (isVendorPath(p)) return;
+      leftover.push(p || f.reason || 'unknown finding');
     });
     reasons.forEach((r) => {
       const files = Array.isArray(r.files) ? r.files : [];
@@ -337,6 +448,12 @@ UNSAFE_FILES=$(printf '%s\n' "$PARSED" | tail -n +2)
 
 if [ "$SAFE" = "true" ] && printf '%s' "$OUTPUT" | grep -q 'git-lfs.github.com/spec'; then
   echo -e "${YELLOW}Ignored fake-asset hit(s) on Git LFS pointer files (not JS payloads).${NC}"
+fi
+
+if [ "$SAFE" = "true" ] && printf '%s' "$OUTPUT" | grep -qF 'node_modules/'; then
+  echo -e "${YELLOW}Ignored scanner hit(s) under node_modules / .next (not committed source).${NC}"
+elif [ "$SAFE" = "true" ] && printf '%s' "$OUTPUT" | grep -qF '.next/'; then
+  echo -e "${YELLOW}Ignored scanner hit(s) under node_modules / .next (not committed source).${NC}"
 fi
 
 if [ "$SAFE" != "true" ]; then
